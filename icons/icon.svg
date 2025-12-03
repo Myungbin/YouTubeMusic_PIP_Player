@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
+  <defs>
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#ff6b6b"/>
+      <stop offset="100%" style="stop-color:#ee5a24"/>
+    </linearGradient>
+  </defs>
+  
+  <!-- Background Circle -->
+  <circle cx="64" cy="64" r="60" fill="url(#bgGrad)"/>
+  
+  <!-- PIP Icon -->
+  <g fill="#fff">
+    <!-- Outer frame -->
+    <path d="M32 36h64c2.2 0 4 1.8 4 4v48c0 2.2-1.8 4-4 4H32c-2.2 0-4-1.8-4-4V40c0-2.2 1.8-4 4-4zm0 6v46h64V42H32z"/>
+    
+    <!-- Inner PIP window -->
+    <rect x="58" y="54" width="32" height="24" rx="2" fill="#fff"/>
+    
+    <!-- Play button in main area -->
+    <path d="M44 52v24l18-12z" fill="#fff" opacity="0.7"/>
+  </g>
+</svg>
+

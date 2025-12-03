@@ -1,0 +1,41 @@
+/* YouTube Music PIP Player - Content Styles */
+
+/* PIP 버튼 스타일 */
+.ytm-pip-button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  background: transparent;
+  border: none;
+  border-radius: 50%;
+  cursor: pointer;
+  color: rgba(255, 255, 255, 0.7);
+  transition: all 0.2s ease;
+  margin-right: 4px;
+}
+
+.ytm-pip-button:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: #fff;
+}
+
+.ytm-pip-button:active {
+  transform: scale(0.95);
+}
+
+.ytm-pip-button svg {
+  width: 24px;
+  height: 24px;
+}
+
+/* PIP 버튼 활성 상태 */
+.ytm-pip-button.active {
+  color: #ff6b6b;
+}
+
+.ytm-pip-button.active:hover {
+  color: #ff8787;
+}
+
