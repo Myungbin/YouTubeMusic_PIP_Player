@@ -513,8 +513,8 @@ class YouTubeMusicPIP {
 
       /* ------------ 반응형 레이아웃 (창이 작아질 때) ------------ */
 
-      /* 세로가 많이 줄어든 초소형 모드 */
-      @media (max-height: 220px) {
+      /* 기본 컴팩트 모드 (세로가 조금 줄어든 경우) */
+      @media (max-height: 260px) {
         .pip-container {
           padding: 10px 12px;
         }
@@ -572,6 +572,88 @@ class YouTubeMusicPIP {
 
         .time-display {
           font-size: 10px;
+        }
+      }
+
+      /* 아주 작게 줄어든 초소형 모드 (PIP 창 높이가 매우 낮을 때)
+         → 유튜브뮤직 상단 미니 플레이어처럼 가로 한 줄 레이아웃 */
+      @media (max-height: 180px) {
+        .pip-container {
+          padding: 4px 10px;
+          flex-direction: row;
+          align-items: center;
+          gap: 8px;
+        }
+
+        .album-section {
+          align-items: center;
+          flex: 1;
+          order: 2;
+          gap: 6px;
+        }
+
+        .album-art {
+          width: 32px;
+          height: 32px;
+          border-radius: 6px;
+        }
+
+        .track-title {
+          font-size: 12px;
+          max-width: 100%;
+        }
+
+        .track-artist {
+          font-size: 10px;
+        }
+
+        .track-info {
+          gap: 2px;
+        }
+
+        .progress-section {
+          display: none; /* 진행바는 초소형에서는 숨김 */
+        }
+
+        .time-display {
+          display: none;
+        }
+
+        .controls-section {
+          padding-top: 0;
+          gap: 6px;
+          order: 1;
+          flex-shrink: 0;
+        }
+
+        /* 보조 버튼(셔플/반복)은 숨기고 핵심 컨트롤만 남김 */
+        .control-btn.small.shuffle-btn,
+        .control-btn.small.repeat-btn {
+          display: none;
+        }
+
+        .control-btn {
+          width: 32px;
+          height: 32px;
+        }
+
+        .control-btn.play-pause {
+          width: 36px;
+          height: 36px;
+        }
+
+        .control-btn svg {
+          width: 16px;
+          height: 16px;
+        }
+
+        .control-btn.play-pause svg {
+          width: 20px;
+          height: 20px;
+        }
+
+        .volume-control {
+          display: none; /* 초소형에서는 볼륨도 숨김 */
         }
       }
 
