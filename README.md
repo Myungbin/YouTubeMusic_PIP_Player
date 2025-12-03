@@ -1,5 +1,6 @@
 # 🎵 YouTube Music PIP Player
-
+**Author: Myungbin**  
+**This code was generated using Vibe Coding**  
 유튜브 뮤직을 Picture-in-Picture(PIP) 모드로 즐길 수 있는 크롬 확장 프로그램입니다.
 
 ![Preview](./preview.png)
@@ -80,7 +81,3 @@ Youtube_music_player/
 ## 📜 라이선스
 
 MIT License
-
----
-
-
