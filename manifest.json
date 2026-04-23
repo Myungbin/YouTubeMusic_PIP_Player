@@ -1,15 +1,10 @@
 {
   "manifest_version": 3,
   "name": "YouTube Music PIP Player",
-  "version": "1.0.0",
-  "description": "유튜브 뮤직을 PIP(Picture-in-Picture) 모드로 즐기세요! 다음 곡, 이전 곡, 재생/일시정지 컨트롤을 지원합니다.",
-  "permissions": [
-    "activeTab",
-    "scripting"
-  ],
-  "host_permissions": [
-    "https://music.youtube.com/*"
-  ],
+  "version": "1.1.0",
+  "description": "유튜브 뮤직을 Picture-in-Picture 모드로 제어할 수 있는 Chrome 확장 프로그램입니다.",
+  "permissions": ["activeTab"],
+  "host_permissions": ["https://music.youtube.com/*"],
   "action": {
     "default_popup": "popup.html",
     "default_icon": {
@@ -23,10 +18,19 @@
     "48": "icons/icon48.png",
     "128": "icons/icon128.png"
   },
+  "commands": {
+    "toggle-pip": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+Y",
+        "mac": "Command+Shift+Y"
+      },
+      "description": "Toggle YouTube Music Picture-in-Picture"
+    }
+  },
   "content_scripts": [
     {
       "matches": ["https://music.youtube.com/*"],
-      "js": ["content.js"],
+      "js": ["helpers.js", "content.js"],
       "css": ["styles.css"],
       "run_at": "document_end"
     }
@@ -35,4 +39,3 @@
     "service_worker": "background.js"
   }
 }
-

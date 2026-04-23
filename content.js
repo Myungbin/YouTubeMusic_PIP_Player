@@ -1,508 +1,536 @@
-// YouTube Music PIP Player - Content Script
-// Document Picture-in-Picture API를 사용하여 풍부한 UI 제공
+const contentShared = globalThis.YouTubeMusicPIPShared || {};
+const clamp = contentShared.clamp || ((value) => value);
+const createStatusSnapshot =
+  contentShared.createStatusSnapshot ||
+  function fallbackCreateStatusSnapshot(partialStatus) {
+    return Object.assign(
+      {
+        pipMode: "off",
+        lastError: null,
+        isReady: false,
+        canUseDocumentPip: false,
+        canUseVideoPip: false,
+      },
+      partialStatus || {},
+    );
+  };
+const formatTime =
+  contentShared.formatTime || function fallbackFormatTime() {
+    return "0:00";
+  };
+const getVolumeIconMarkup =
+  contentShared.getVolumeIconMarkup ||
+  function fallbackGetVolumeIconMarkup() {
+    return "";
+  };
+const normalizeArtworkUrl =
+  contentShared.normalizeArtworkUrl || function fallbackNormalizeArtworkUrl(url) {
+    return url || "";
+  };
+const serializeError =
+  contentShared.serializeError || function fallbackSerializeError(error, code) {
+    return { code, message: error?.message || "" };
+  };
 
-class YouTubeMusicPIP {
+const PAGE_BUTTON_CLASS = "ytm-pip-button";
+const PIP_OPEN_ICON =
+  '<svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M19 7h-8v6h8V7zm2-4H3c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h18c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm0 16H3V5h18v14z"/></svg>';
+const PLAY_ICON_PATH = '<path d="M8 5v14l11-7z"></path>';
+const PAUSE_ICON_PATH = '<path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"></path>';
+const ACTIVE_CONTROL_CLASS_NAMES = [
+  "style-default-active",
+  "active",
+];
+
+const SELECTORS = {
+  albumArt: "img.image",
+  artist: ".byline",
+  next: ".next-button",
+  playPause: "#play-pause-button",
+  playerBar: "ytmusic-player-bar",
+  previous: ".previous-button",
+  repeat: ".repeat",
+  rightControls: ".right-controls-buttons",
+  shuffle: ".shuffle",
+  title: ".title",
+  video: "video",
+};
+
+class PlayerPageAdapter {
+  getPlayerBar() {
+    return document.querySelector(SELECTORS.playerBar);
+  }
+
+  getVideo() {
+    return document.querySelector(SELECTORS.video);
+  }
+
+  queryPlayer(selector) {
+    const playerBar = this.getPlayerBar();
+    return playerBar ? playerBar.querySelector(selector) : null;
+  }
+
+  getRightControls() {
+    return this.queryPlayer(SELECTORS.rightControls);
+  }
+
+  readText(selector, fallbackText) {
+    const text = this.queryPlayer(selector)?.textContent?.trim();
+    return text || fallbackText;
+  }
+
+  getTrackSnapshot() {
+    const albumArt = this.queryPlayer(SELECTORS.albumArt);
+
+    return {
+      albumArtUrl: normalizeArtworkUrl(albumArt?.src || ""),
+      artist: this.readText(SELECTORS.artist, "아티스트 정보 없음"),
+      title: this.readText(SELECTORS.title, "재생 중인 곡 없음"),
+    };
+  }
+
+  readToggleState(button) {
+    if (!button) {
+      return false;
+    }
+
+    const ariaPressed = button.getAttribute("aria-pressed");
+    if (ariaPressed === "true") {
+      return true;
+    }
+
+    if (ariaPressed === "false") {
+      return false;
+    }
+
+    return (
+      button.hasAttribute("active") ||
+      button.hasAttribute("selected") ||
+      ACTIVE_CONTROL_CLASS_NAMES.some((className) =>
+        button.classList.contains(className),
+      )
+    );
+  }
+
+  getPlaybackSnapshot() {
+    const video = this.getVideo();
+    const duration = Number.isFinite(video?.duration) ? video.duration : 0;
+    const currentTime = Number.isFinite(video?.currentTime) ? video.currentTime : 0;
+    const percent = duration > 0 ? clamp(currentTime / duration, 0, 1) : 0;
+
+    return {
+      canSeek: duration > 0,
+      currentTime,
+      duration,
+      isPlaying: Boolean(video && !video.paused),
+      isReady: Boolean(this.getPlayerBar() && video),
+      muted: Boolean(video?.muted),
+      percent,
+      repeatActive: this.readToggleState(this.queryPlayer(SELECTORS.repeat)),
+      shuffleActive: this.readToggleState(this.queryPlayer(SELECTORS.shuffle)),
+      volume: Number.isFinite(video?.volume) ? video.volume : 1,
+    };
+  }
+
+  ensurePipButton(onClick) {
+    const controls = this.getRightControls();
+    if (!controls) {
+      return null;
+    }
+
+    let button = controls.querySelector(`.${PAGE_BUTTON_CLASS}`);
+
+    if (!button) {
+      button = document.createElement("button");
+      button.className = PAGE_BUTTON_CLASS;
+      button.type = "button";
+      button.title = "Picture-in-Picture 모드 시작";
+      button.setAttribute("aria-label", "Picture-in-Picture 모드 시작");
+      button.setAttribute("aria-pressed", "false");
+      button.innerHTML = PIP_OPEN_ICON;
+      button.addEventListener("click", onClick);
+    }
+
+    if (button.parentElement !== controls) {
+      controls.insertBefore(button, controls.firstChild);
+    }
+
+    return button;
+  }
+
+  updatePipButtonState(pipMode) {
+    const button = document.querySelector(`.${PAGE_BUTTON_CLASS}`);
+    if (!button) {
+      return;
+    }
+
+    const isActive = pipMode !== "off";
+    const label = isActive
+      ? "Picture-in-Picture 모드 종료"
+      : "Picture-in-Picture 모드 시작";
+
+    button.classList.toggle("active", isActive);
+    button.title = label;
+    button.setAttribute("aria-label", label);
+    button.setAttribute("aria-pressed", String(isActive));
+  }
+
+  click(selector) {
+    const button = this.queryPlayer(selector);
+    if (!button) {
+      return false;
+    }
+
+    button.click();
+    return true;
+  }
+
+  togglePlayPause() {
+    return this.click(SELECTORS.playPause);
+  }
+
+  previousTrack() {
+    return this.click(SELECTORS.previous);
+  }
+
+  nextTrack() {
+    return this.click(SELECTORS.next);
+  }
+
+  toggleShuffle() {
+    return this.click(SELECTORS.shuffle);
+  }
+
+  toggleRepeat() {
+    return this.click(SELECTORS.repeat);
+  }
+
+  seekTo(percent) {
+    const video = this.getVideo();
+    if (!video || !Number.isFinite(video.duration) || video.duration <= 0) {
+      return false;
+    }
+
+    video.currentTime = clamp(percent, 0, 1) * video.duration;
+    return true;
+  }
+
+  setVolume(value) {
+    const video = this.getVideo();
+    if (!video) {
+      return false;
+    }
+
+    const nextVolume = clamp(value, 0, 1);
+    video.volume = nextVolume;
+
+    if (nextVolume > 0) {
+      video.muted = false;
+    }
+
+    return true;
+  }
+
+  toggleMute() {
+    const video = this.getVideo();
+    if (!video) {
+      return false;
+    }
+
+    video.muted = !video.muted;
+    return true;
+  }
+}
+
+class PipView {
   constructor() {
     this.pipWindow = null;
-    this.isInPIP = false;
-    this.updateInterval = null;
-    this.init();
+    this.onAction = null;
+    this.onClose = null;
   }
 
-  init() {
-    // 페이지 로드 완료 후 버튼 추가
-    this.waitForElement('ytmusic-player-bar').then(() => {
-      this.addPIPButton();
-      this.setupMessageListener();
+  isOpen() {
+    return Boolean(this.pipWindow && !this.pipWindow.closed);
+  }
+
+  async open(onAction, onClose) {
+    const pipWindow = await window.documentPictureInPicture.requestWindow({
+      width: 420,
+      height: 260,
+      preferInitialWindowPlacement: true,
     });
+
+    this.attach(pipWindow, onAction, onClose);
+    return pipWindow;
   }
 
-  // 요소가 로드될 때까지 대기
-  waitForElement(selector, timeout = 10000) {
-    return new Promise((resolve, reject) => {
-      const element = document.querySelector(selector);
-      if (element) {
-        resolve(element);
-        return;
-      }
+  attach(pipWindow, onAction, onClose) {
+    this.pipWindow = pipWindow;
+    this.onAction = onAction;
+    this.onClose = onClose;
 
-      const observer = new MutationObserver((mutations, obs) => {
-        const el = document.querySelector(selector);
-        if (el) {
-          obs.disconnect();
-          resolve(el);
+    const pipDocument = pipWindow.document;
+    pipDocument.head.innerHTML = "";
+    pipDocument.body.innerHTML = "";
+
+    const styleElement = pipDocument.createElement("style");
+    styleElement.textContent = this.getStyles();
+    pipDocument.head.appendChild(styleElement);
+    pipDocument.body.innerHTML = this.getMarkup();
+
+    this.bindEvents(pipDocument);
+
+    pipWindow.addEventListener(
+      "pagehide",
+      () => {
+        this.pipWindow = null;
+
+        if (this.onClose) {
+          this.onClose();
         }
+      },
+      { once: true },
+    );
+  }
+
+  bindEvents(pipDocument) {
+    pipDocument.getElementById("playPauseBtn").addEventListener("click", () => {
+      this.onAction?.("togglePlayPause");
+    });
+
+    pipDocument.getElementById("prevBtn").addEventListener("click", () => {
+      this.onAction?.("previousTrack");
+    });
+
+    pipDocument.getElementById("nextBtn").addEventListener("click", () => {
+      this.onAction?.("nextTrack");
+    });
+
+    pipDocument.getElementById("shuffleBtn").addEventListener("click", () => {
+      this.onAction?.("toggleShuffle");
+    });
+
+    pipDocument.getElementById("repeatBtn").addEventListener("click", () => {
+      this.onAction?.("toggleRepeat");
+    });
+
+    pipDocument.getElementById("closeBtn").addEventListener("click", () => {
+      this.onAction?.("close");
+    });
+
+    pipDocument
+      .getElementById("progressContainer")
+      .addEventListener("click", (event) => {
+        const rect = event.currentTarget.getBoundingClientRect();
+        const percent = (event.clientX - rect.left) / rect.width;
+        this.onAction?.("seek", percent);
       });
 
-      observer.observe(document.body, {
-        childList: true,
-        subtree: true
-      });
+    pipDocument.getElementById("volumeSlider").addEventListener("input", (event) => {
+      this.onAction?.("setVolume", Number(event.target.value) / 100);
+    });
 
-      setTimeout(() => {
-        observer.disconnect();
-        reject(new Error(`Element ${selector} not found`));
-      }, timeout);
+    pipDocument.getElementById("volumeBtn").addEventListener("click", () => {
+      this.onAction?.("toggleMute");
     });
   }
 
-  // PIP 버튼 추가
-  addPIPButton() {
-    const playerBar = document.querySelector('ytmusic-player-bar');
-    if (!playerBar) return;
+  render(snapshot) {
+    if (!this.isOpen()) {
+      return;
+    }
 
-    // 이미 버튼이 있으면 추가하지 않음
-    if (document.querySelector('.ytm-pip-button')) return;
+    const pipDocument = this.pipWindow.document;
+    const albumArt = pipDocument.getElementById("albumArt");
+    const artist = pipDocument.getElementById("trackArtist");
+    const background = pipDocument.getElementById("bgLayer");
+    const currentTime = pipDocument.getElementById("currentTime");
+    const playIcon = pipDocument.getElementById("playIcon");
+    const progressBar = pipDocument.getElementById("progressBar");
+    const repeatButton = pipDocument.getElementById("repeatBtn");
+    const shuffleButton = pipDocument.getElementById("shuffleBtn");
+    const title = pipDocument.getElementById("trackTitle");
+    const totalTime = pipDocument.getElementById("totalTime");
+    const volumeIcon = pipDocument.getElementById("volumeIcon");
+    const volumeSlider = pipDocument.getElementById("volumeSlider");
 
-    const rightControls = playerBar.querySelector('.right-controls-buttons');
-    if (!rightControls) return;
-
-    const pipButton = document.createElement('button');
-    pipButton.className = 'ytm-pip-button';
-    pipButton.title = 'Picture-in-Picture 모드';
-    pipButton.innerHTML = `
-      <svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor">
-        <path d="M19 7h-8v6h8V7zm2-4H3c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h18c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm0 16H3V5h18v14z"/>
-      </svg>
-    `;
-
-    pipButton.addEventListener('click', () => this.togglePIP());
-    rightControls.insertBefore(pipButton, rightControls.firstChild);
-  }
-
-  // 메시지 리스너 설정 (팝업에서 명령 수신)
-  setupMessageListener() {
-    chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-      if (message.action === 'togglePIP') {
-        this.togglePIP();
-        sendResponse({ success: true });
-      } else if (message.action === 'getStatus') {
-        sendResponse({ isInPIP: this.isInPIP });
-      }
-      return true;
-    });
-  }
-
-  // PIP 토글
-  async togglePIP() {
-    if (this.isInPIP) {
-      this.closePIP();
+    if (snapshot.albumArtUrl) {
+      albumArt.src = snapshot.albumArtUrl;
+      background.style.backgroundImage = `url(${snapshot.albumArtUrl})`;
     } else {
-      await this.openPIP();
+      albumArt.removeAttribute("src");
+      background.style.backgroundImage = "none";
     }
+
+    title.textContent = snapshot.title;
+    title.title = snapshot.title;
+    artist.textContent = snapshot.artist;
+    artist.title = snapshot.artist;
+    playIcon.innerHTML = snapshot.isPlaying ? PAUSE_ICON_PATH : PLAY_ICON_PATH;
+    progressBar.style.width = `${Math.round(snapshot.percent * 100)}%`;
+    currentTime.textContent = formatTime(snapshot.currentTime);
+    totalTime.textContent = formatTime(snapshot.duration);
+    shuffleButton.classList.toggle("active", snapshot.shuffleActive);
+    repeatButton.classList.toggle("active", snapshot.repeatActive);
+    volumeSlider.value = String(Math.round(snapshot.volume * 100));
+    volumeIcon.innerHTML = getVolumeIconMarkup(snapshot.volume, snapshot.muted);
   }
 
-  // PIP 창 열기
-  async openPIP() {
-    try {
-      // Document Picture-in-Picture API 사용
-      if ('documentPictureInPicture' in window) {
-        this.pipWindow = await window.documentPictureInPicture.requestWindow({
-          width: 400,
-          height: 250
-        });
-
-        this.setupPIPWindow();
-        this.isInPIP = true;
-        this.startUpdateLoop();
-
-        // PIP 창 닫힘 감지
-        this.pipWindow.addEventListener('pagehide', () => {
-          this.isInPIP = false;
-          this.stopUpdateLoop();
-        });
-      } else {
-        // 폴백: 비디오 PIP 사용
-        await this.fallbackVideoPIP();
-      }
-    } catch (error) {
-      console.error('PIP 모드 활성화 실패:', error);
-      // 폴백 시도
-      await this.fallbackVideoPIP();
+  close() {
+    if (!this.isOpen()) {
+      this.pipWindow = null;
+      return;
     }
+
+    this.pipWindow.close();
+    this.pipWindow = null;
   }
 
-  // PIP 창 설정
-  setupPIPWindow() {
-    const pipDoc = this.pipWindow.document;
+  getMarkup() {
+    return `
+      <div class="bg-layer" id="bgLayer"></div>
+      <div class="bg-overlay"></div>
+      <div class="pip-shell">
+        <button class="close-btn" id="closeBtn" type="button" aria-label="PIP 닫기">
+          <svg viewBox="0 0 24 24">
+            <path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"></path>
+          </svg>
+        </button>
 
-    // 스타일 추가
-    const style = pipDoc.createElement('style');
-    style.textContent = this.getPIPStyles();
-    pipDoc.head.appendChild(style);
+        <div class="content">
+          <div class="album-section">
+            <img class="album-art" id="albumArt" alt="앨범 아트" />
+            <div class="track-info">
+              <div class="track-title" id="trackTitle">재생 중인 곡 없음</div>
+              <div class="track-artist" id="trackArtist">아티스트 정보 없음</div>
+            </div>
+          </div>
 
-    // 폰트 추가
-    const fontLink = pipDoc.createElement('link');
-    fontLink.href = 'https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;700&display=swap';
-    fontLink.rel = 'stylesheet';
-    pipDoc.head.appendChild(fontLink);
+          <div class="progress-section">
+            <div class="progress-bar-container" id="progressContainer">
+              <div class="progress-bar" id="progressBar"></div>
+            </div>
+            <div class="time-row">
+              <div class="time-text">
+                <span id="currentTime">0:00</span>
+                <span>/</span>
+                <span id="totalTime">0:00</span>
+              </div>
+              <div class="volume-control">
+                <div class="volume-slider-wrap">
+                  <input
+                    class="volume-slider"
+                    id="volumeSlider"
+                    type="range"
+                    min="0"
+                    max="100"
+                    value="100"
+                  />
+                </div>
+                <button class="volume-btn" id="volumeBtn" type="button" aria-label="음소거 전환">
+                  <svg id="volumeIcon" viewBox="0 0 24 24"></svg>
+                </button>
+              </div>
+            </div>
+          </div>
 
-    // 컨텐츠 생성
-    pipDoc.body.innerHTML = this.getPIPContent();
-
-    // 이벤트 리스너 설정
-    this.setupPIPEventListeners(pipDoc);
-
-    // 초기 상태 업데이트
-    this.updatePIPContent();
+          <div class="controls">
+            <button class="control-btn small shuffle-btn" id="shuffleBtn" type="button" aria-label="셔플">
+              <svg viewBox="0 0 24 24">
+                <path d="M10.59 9.17L5.41 4 4 5.41l5.17 5.17 1.42-1.41zM14.5 4l2.04 2.04L4 18.59 5.41 20 17.96 7.46 20 9.5V4h-5.5zm.33 9.41l-1.41 1.41 3.13 3.13L14.5 20H20v-5.5l-2.04 2.04-3.13-3.13z"></path>
+              </svg>
+            </button>
+            <button class="control-btn" id="prevBtn" type="button" aria-label="이전 곡">
+              <svg viewBox="0 0 24 24">
+                <path d="M6 6h2v12H6zm3.5 6l8.5 6V6z"></path>
+              </svg>
+            </button>
+            <button class="control-btn play-pause" id="playPauseBtn" type="button" aria-label="재생 또는 일시정지">
+              <svg id="playIcon" viewBox="0 0 24 24"></svg>
+            </button>
+            <button class="control-btn" id="nextBtn" type="button" aria-label="다음 곡">
+              <svg viewBox="0 0 24 24">
+                <path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z"></path>
+              </svg>
+            </button>
+            <button class="control-btn small repeat-btn" id="repeatBtn" type="button" aria-label="반복">
+              <svg viewBox="0 0 24 24">
+                <path d="M7 7h10v3l4-4-4-4v3H5v6h2V7zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2v4z"></path>
+              </svg>
+            </button>
+          </div>
+        </div>
+      </div>
+    `;
   }
 
-  // PIP 스타일
-  getPIPStyles() {
+  getStyles() {
     return `
       * {
-        margin: 0;
-        padding: 0;
         box-sizing: border-box;
       }
 
       body {
-        font-family: 'Noto Sans KR', -apple-system, BlinkMacSystemFont, sans-serif;
-        background: #0a0a0a;
-        color: #fff;
+        margin: 0;
         height: 100vh;
-        display: flex;
-        flex-direction: column;
+        color: #f8fafc;
+        font-family: "Segoe UI", "Apple SD Gothic Neo", "Malgun Gothic", system-ui, sans-serif;
+        background: #020617;
         overflow: hidden;
-        user-select: none;
-        position: relative;
       }
 
-      /* 배경 이미지 레이어 */
+      button,
+      input {
+        font: inherit;
+      }
+
       .bg-layer {
-        position: absolute;
-        top: -20px;
-        left: -20px;
-        right: -20px;
-        bottom: -20px;
+        position: fixed;
+        inset: -24px;
         background-size: cover;
         background-position: center;
-        filter: blur(30px) saturate(1.5);
-        transform: scale(1.1);
-        transition: background-image 0.8s ease-in-out;
-        z-index: 0;
-      }
-
-      /* 배경 오버레이 (가독성을 위한 어두운 레이어) */
-      .bg-overlay {
-        position: absolute;
-        top: 0;
-        left: 0;
-        right: 0;
-        bottom: 0;
-        background: linear-gradient(
-          180deg,
-          rgba(0, 0, 0, 0.4) 0%,
-          rgba(0, 0, 0, 0.6) 50%,
-          rgba(0, 0, 0, 0.75) 100%
-        );
-        z-index: 1;
-      }
-
-      .pip-container {
-        position: relative;
-        z-index: 2;
-        display: flex;
-        flex-direction: column;
-        height: 100%;
-        padding: 16px;
-      }
-
-      .album-section {
-        display: flex;
-        align-items: center;
-        gap: 14px;
-        flex: 1;
-        min-height: 0;
-      }
-
-      .album-art {
-        width: 90px;
-        height: 90px;
-        border-radius: 12px;
-        object-fit: cover;
-        box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
-        flex-shrink: 0;
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-        border: 2px solid rgba(255, 255, 255, 0.1);
-      }
-
-      .track-info {
-        flex: 1;
-        min-width: 0;
-        display: flex;
-        flex-direction: column;
-        gap: 4px;
-      }
-
-      .track-title {
-        font-size: 15px;
-        font-weight: 700;
-        color: #fff;
-        white-space: nowrap;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        letter-spacing: -0.3px;
-      }
-
-      .track-artist {
-        font-size: 13px;
-        color: rgba(255, 255, 255, 0.7);
-        white-space: nowrap;
-        overflow: hidden;
-        text-overflow: ellipsis;
-      }
-
-      .progress-section {
-        margin: 12px 0;
-      }
-
-      .progress-bar-container {
-        height: 4px;
-        background: rgba(255, 255, 255, 0.2);
-        border-radius: 3px;
-        overflow: hidden;
-        cursor: pointer;
-        transition: height 0.2s ease;
-        backdrop-filter: blur(5px);
-        -webkit-backdrop-filter: blur(5px);
-      }
-
-      .progress-bar-container:hover {
-        height: 6px;
-        background: rgba(255, 255, 255, 0.25);
-      }
-
-      .progress-bar {
-        height: 100%;
-        background: rgba(255, 255, 255, 0.9);
-        border-radius: 3px;
-        width: 0%;
-        transition: width 0.1s linear;
-        box-shadow: 0 0 10px rgba(255, 255, 255, 0.5);
-      }
-
-      .time-display {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        font-size: 11px;
-        color: rgba(255, 255, 255, 0.5);
-        margin-top: 6px;
-        font-variant-numeric: tabular-nums;
-      }
-
-      .time-left {
-        display: flex;
-        align-items: center;
-        gap: 4px;
-      }
-
-      /* 볼륨 컨트롤 */
-      .volume-control {
-        display: flex;
-        align-items: center;
-        gap: 6px;
-        position: relative;
-      }
-
-      .volume-btn {
-        background: none;
-        border: none;
-        color: rgba(255, 255, 255, 0.6);
-        cursor: pointer;
-        padding: 4px;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        transition: all 0.2s ease;
-        border-radius: 4px;
-      }
-
-      .volume-btn:hover {
-        color: #fff;
-        background: rgba(255, 255, 255, 0.1);
-      }
-
-      .volume-btn svg {
-        width: 16px;
-        height: 16px;
-        fill: currentColor;
-      }
-
-      .volume-slider-wrap {
-        display: flex;
-        align-items: center;
-        width: 0;
-        overflow: hidden;
-        transition: width 0.3s ease;
-      }
-
-      .volume-control:hover .volume-slider-wrap {
-        width: 70px;
-      }
-
-      .volume-slider {
-        width: 60px;
-        height: 4px;
-        -webkit-appearance: none;
-        appearance: none;
-        background: rgba(255, 255, 255, 0.2);
-        border-radius: 2px;
-        outline: none;
-        cursor: pointer;
-        margin-left: 4px;
-      }
-
-      .volume-slider::-webkit-slider-thumb {
-        -webkit-appearance: none;
-        appearance: none;
-        width: 12px;
-        height: 12px;
-        background: #fff;
-        border-radius: 50%;
-        cursor: pointer;
-        box-shadow: 0 2px 6px rgba(0, 0, 0, 0.3);
-        transition: transform 0.15s ease;
-      }
-
-      .volume-slider::-webkit-slider-thumb:hover {
-        transform: scale(1.2);
-      }
-
-      .volume-slider::-moz-range-thumb {
-        width: 12px;
-        height: 12px;
-        background: #fff;
-        border-radius: 50%;
-        cursor: pointer;
-        border: none;
-        box-shadow: 0 2px 6px rgba(0, 0, 0, 0.3);
-      }
-
-      .controls-section {
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        gap: 8px;
-        padding-top: 8px;
-      }
-
-      .control-btn {
-        background: rgba(255, 255, 255, 0.1);
-        backdrop-filter: blur(10px);
-        -webkit-backdrop-filter: blur(10px);
-        border: 1px solid rgba(255, 255, 255, 0.1);
-        border-radius: 50%;
-        width: 44px;
-        height: 44px;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        cursor: pointer;
-        transition: all 0.2s ease;
-        color: #fff;
-      }
-
-      .control-btn:hover {
-        background: rgba(255, 255, 255, 0.2);
-        border-color: rgba(255, 255, 255, 0.2);
+        filter: blur(34px) saturate(1.3);
+        opacity: 0.58;
         transform: scale(1.08);
       }
 
-      .control-btn:active {
-        transform: scale(0.95);
+      .bg-overlay {
+        position: fixed;
+        inset: 0;
+        background:
+          radial-gradient(circle at top, rgba(251, 113, 133, 0.28), transparent 34%),
+          linear-gradient(180deg, rgba(2, 6, 23, 0.2), rgba(2, 6, 23, 0.88));
       }
 
-      .control-btn svg {
-        width: 20px;
-        height: 20px;
-        fill: currentColor;
-        filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.3));
+      .pip-shell {
+        position: relative;
+        height: 100%;
       }
 
-      .control-btn.play-pause {
-        width: 56px;
-        height: 56px;
-        background: rgba(255, 255, 255, 0.25);
-        backdrop-filter: blur(10px);
-        -webkit-backdrop-filter: blur(10px);
-        border: 1px solid rgba(255, 255, 255, 0.3);
-        box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
-      }
-
-      .control-btn.play-pause:hover {
-        background: rgba(255, 255, 255, 0.35);
-        box-shadow: 0 6px 25px rgba(0, 0, 0, 0.4);
-        transform: scale(1.1);
-      }
-
-      .control-btn.play-pause svg {
-        width: 26px;
-        height: 26px;
-      }
-
-      .control-btn.small {
-        width: 36px;
-        height: 36px;
-      }
-
-      .control-btn.small svg {
-        width: 16px;
-        height: 16px;
-      }
-
-      /* 셔플/반복은 서로 다른 색으로 구분 */
-      .control-btn.small.shuffle-btn,
-      .control-btn.small.repeat-btn {
-        opacity: 0.8;
-      }
-
-      .control-btn.small.shuffle-btn.active {
-        opacity: 1;
-        color: #4ade80;
-        background: rgba(74, 222, 128, 0.18);
-        border-color: rgba(74, 222, 128, 0.45);
-        box-shadow: 0 0 12px rgba(74, 222, 128, 0.6);
-      }
-
-      .control-btn.small.repeat-btn.active {
-        opacity: 1;
-        color: #facc15;
-        background: rgba(250, 204, 21, 0.18);
-        border-color: rgba(250, 204, 21, 0.45);
-        box-shadow: 0 0 12px rgba(250, 204, 21, 0.6);
+      .content {
+        position: relative;
+        z-index: 1;
+        height: 100%;
+        padding: 16px;
+        display: flex;
+        flex-direction: column;
+        gap: 14px;
       }
 
       .close-btn {
         position: absolute;
-        top: 8px;
-        right: 8px;
+        top: 10px;
+        right: 10px;
+        z-index: 2;
         width: 28px;
         height: 28px;
-        background: rgba(0, 0, 0, 0.4);
-        backdrop-filter: blur(10px);
-        -webkit-backdrop-filter: blur(10px);
-        border: 1px solid rgba(255, 255, 255, 0.1);
-        border-radius: 50%;
-        color: rgba(255, 255, 255, 0.7);
+        display: grid;
+        place-items: center;
+        border: 0;
+        border-radius: 999px;
+        color: rgba(248, 250, 252, 0.76);
+        background: rgba(15, 23, 42, 0.48);
         cursor: pointer;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        transition: all 0.2s ease;
-        opacity: 0;
-        z-index: 10;
-      }
-
-      body:hover .close-btn {
-        opacity: 1;
-      }
-
-      .close-btn:hover {
-        background: rgba(255, 255, 255, 0.2);
-        border-color: rgba(255, 255, 255, 0.3);
-        color: #fff;
       }
 
       .close-btn svg {
@@ -511,21 +539,165 @@ class YouTubeMusicPIP {
         fill: currentColor;
       }
 
-      /* ------------ 반응형 레이아웃 (창이 작아질 때) ------------ */
+      .album-section {
+        min-height: 0;
+        display: flex;
+        align-items: center;
+        gap: 14px;
+        flex: 1;
+      }
 
-      /* 기본 컴팩트 모드 (세로가 조금 줄어든 경우) */
-      @media (max-height: 260px) {
-        .pip-container {
+      .album-art {
+        width: 90px;
+        height: 90px;
+        flex-shrink: 0;
+        border-radius: 14px;
+        object-fit: cover;
+        background: linear-gradient(135deg, #334155, #0f172a);
+        box-shadow: 0 18px 40px rgba(2, 6, 23, 0.4);
+      }
+
+      .track-info {
+        min-width: 0;
+        display: grid;
+        gap: 6px;
+      }
+
+      .track-title,
+      .track-artist {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .track-title {
+        font-size: 16px;
+        font-weight: 700;
+      }
+
+      .track-artist {
+        font-size: 13px;
+        color: rgba(248, 250, 252, 0.72);
+      }
+
+      .progress-section {
+        display: grid;
+        gap: 8px;
+      }
+
+      .progress-bar-container {
+        height: 5px;
+        overflow: hidden;
+        border-radius: 999px;
+        background: rgba(255, 255, 255, 0.16);
+        cursor: pointer;
+      }
+
+      .progress-bar {
+        height: 100%;
+        width: 0;
+        border-radius: inherit;
+        background: linear-gradient(90deg, #fb7185 0%, #f97316 100%);
+      }
+
+      .time-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+      }
+
+      .time-text {
+        display: inline-flex;
+        gap: 4px;
+        font-size: 11px;
+        color: rgba(248, 250, 252, 0.68);
+        font-variant-numeric: tabular-nums;
+      }
+
+      .volume-control {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+      }
+
+      .volume-slider-wrap {
+        width: 70px;
+      }
+
+      .volume-slider {
+        width: 100%;
+      }
+
+      .volume-btn {
+        width: 28px;
+        height: 28px;
+        display: grid;
+        place-items: center;
+        border: 0;
+        border-radius: 999px;
+        color: rgba(248, 250, 252, 0.82);
+        background: rgba(15, 23, 42, 0.38);
+        cursor: pointer;
+      }
+
+      .volume-btn svg {
+        width: 16px;
+        height: 16px;
+        fill: currentColor;
+      }
+
+      .controls {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 8px;
+      }
+
+      .control-btn {
+        width: 44px;
+        height: 44px;
+        display: grid;
+        place-items: center;
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        border-radius: 999px;
+        color: #fff;
+        background: rgba(15, 23, 42, 0.36);
+        cursor: pointer;
+      }
+
+      .control-btn svg {
+        width: 20px;
+        height: 20px;
+        fill: currentColor;
+      }
+
+      .control-btn.play-pause {
+        width: 54px;
+        height: 54px;
+        background: rgba(248, 250, 252, 0.18);
+      }
+
+      .control-btn.small {
+        width: 36px;
+        height: 36px;
+      }
+
+      .control-btn.small.active {
+        color: #fbbf24;
+        border-color: rgba(251, 191, 36, 0.42);
+        background: rgba(251, 191, 36, 0.16);
+      }
+
+      @media (max-height: 210px) {
+        .content {
           padding: 10px 12px;
-        }
-
-        .album-section {
           gap: 10px;
         }
 
         .album-art {
-          width: 70px;
-          height: 70px;
+          width: 64px;
+          height: 64px;
         }
 
         .track-title {
@@ -536,486 +708,439 @@ class YouTubeMusicPIP {
           font-size: 11px;
         }
 
-        .progress-section {
-          margin: 8px 0;
-        }
-
-        .controls-section {
-          gap: 6px;
-          padding-top: 4px;
-        }
-
         .control-btn {
-          width: 38px;
-          height: 38px;
-        }
-
-        .control-btn.play-pause {
-          width: 46px;
-          height: 46px;
-        }
-
-        .control-btn.small {
-          width: 32px;
-          height: 32px;
-        }
-
-        .control-btn svg {
-          width: 16px;
-          height: 16px;
-        }
-
-        .control-btn.play-pause svg {
-          width: 22px;
-          height: 22px;
-        }
-
-        .time-display {
-          font-size: 10px;
-        }
-      }
-
-      /* 아주 작게 줄어든 초소형 모드 (PIP 창 높이가 매우 낮을 때)
-         → 유튜브뮤직 상단 미니 플레이어처럼 가로 한 줄 레이아웃 */
-      @media (max-height: 180px) {
-        .pip-container {
-          padding: 4px 10px;
-          flex-direction: row;
-          align-items: center;
-          gap: 8px;
-        }
-
-        .album-section {
-          align-items: center;
-          flex: 1;
-          order: 2;
-          gap: 6px;
-        }
-
-        .album-art {
-          width: 32px;
-          height: 32px;
-          border-radius: 6px;
-        }
-
-        .track-title {
-          font-size: 12px;
-          max-width: 100%;
-        }
-
-        .track-artist {
-          font-size: 10px;
-        }
-
-        .track-info {
-          gap: 2px;
-        }
-
-        .progress-section {
-          display: none; /* 진행바는 초소형에서는 숨김 */
-        }
-
-        .time-display {
-          display: none;
-        }
-
-        .controls-section {
-          padding-top: 0;
-          gap: 6px;
-          order: 1;
-          flex-shrink: 0;
-        }
-
-        /* 보조 버튼(셔플/반복)은 숨기고 핵심 컨트롤만 남김 */
-        .control-btn.small.shuffle-btn,
-        .control-btn.small.repeat-btn {
-          display: none;
-        }
-
-        .control-btn {
-          width: 32px;
-          height: 32px;
-        }
-
-        .control-btn.play-pause {
           width: 36px;
           height: 36px;
         }
 
-        .control-btn svg {
-          width: 16px;
-          height: 16px;
-        }
-
-        .control-btn.play-pause svg {
-          width: 20px;
-          height: 20px;
-        }
-
-        .volume-control {
-          display: none; /* 초소형에서는 볼륨도 숨김 */
-        }
-      }
-
-      /* 폭이 좁을 때는 시간/볼륨 영역을 더 컴팩트하게 */
-      @media (max-width: 360px) {
-        .time-display {
-          gap: 6px;
-        }
-
-        .time-left span:nth-child(2) {
-          display: none; /* 슬래시(/) 제거 */
-        }
-
-        .volume-slider-wrap {
-          width: 0;
-        }
-
-        .volume-control:hover .volume-slider-wrap {
-          width: 60px;
+        .control-btn.play-pause {
+          width: 42px;
+          height: 42px;
         }
       }
     `;
   }
+}
 
-  // PIP 컨텐츠 HTML
-  getPIPContent() {
-    return `
-      <!-- 배경 레이어 -->
-      <div class="bg-layer" id="bgLayer"></div>
-      <div class="bg-overlay"></div>
-
-      <div class="pip-container">
-        <button class="close-btn" id="closeBtn">
-          <svg viewBox="0 0 24 24"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
-        </button>
-
-        <div class="album-section">
-          <img class="album-art" id="albumArt" src="" alt="Album Art">
-          <div class="track-info">
-            <div class="track-title" id="trackTitle">재생 중인 곡 없음</div>
-            <div class="track-artist" id="trackArtist">아티스트</div>
-          </div>
-        </div>
-
-        <div class="progress-section">
-          <div class="progress-bar-container" id="progressContainer">
-            <div class="progress-bar" id="progressBar"></div>
-          </div>
-          <div class="time-display">
-            <div class="time-left">
-              <span id="currentTime">0:00</span>
-              <span>/</span>
-              <span id="totalTime">0:00</span>
-            </div>
-            <div class="volume-control">
-              <div class="volume-slider-wrap">
-                <input type="range" class="volume-slider" id="volumeSlider" min="0" max="100" value="100">
-              </div>
-              <button class="volume-btn" id="volumeBtn" title="볼륨">
-                <svg viewBox="0 0 24 24" id="volumeIcon"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/></svg>
-              </button>
-            </div>
-          </div>
-        </div>
-
-        <div class="controls-section">
-          <button class="control-btn small shuffle-btn" id="shuffleBtn" title="셔플">
-            <svg viewBox="0 0 24 24"><path d="M10.59 9.17L5.41 4 4 5.41l5.17 5.17 1.42-1.41zM14.5 4l2.04 2.04L4 18.59 5.41 20 17.96 7.46 20 9.5V4h-5.5zm.33 9.41l-1.41 1.41 3.13 3.13L14.5 20H20v-5.5l-2.04 2.04-3.13-3.13z"/></svg>
-          </button>
-          <button class="control-btn" id="prevBtn" title="이전 곡">
-            <svg viewBox="0 0 24 24"><path d="M6 6h2v12H6zm3.5 6l8.5 6V6z"/></svg>
-          </button>
-          <button class="control-btn play-pause" id="playPauseBtn" title="재생/일시정지">
-            <svg viewBox="0 0 24 24" id="playIcon"><path d="M8 5v14l11-7z"/></svg>
-          </button>
-          <button class="control-btn" id="nextBtn" title="다음 곡">
-            <svg viewBox="0 0 24 24"><path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z"/></svg>
-          </button>
-          <button class="control-btn small repeat-btn" id="repeatBtn" title="반복">
-            <svg viewBox="0 0 24 24"><path d="M7 7h10v3l4-4-4-4v3H5v6h2V7zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2v4z"/></svg>
-          </button>
-        </div>
-      </div>
-    `;
+class StateSync {
+  constructor(pageAdapter, callbacks) {
+    this.callbacks = callbacks;
+    this.pageAdapter = pageAdapter;
+    this.playerBar = null;
+    this.rootObserver = null;
+    this.safetyInterval = null;
+    this.syncQueued = false;
+    this.trackObserver = null;
+    this.video = null;
+    this.boundRootMutationHandler = this.handleRootMutations.bind(this);
+    this.boundTrackMutationHandler = this.handleTrackMutations.bind(this);
+    this.boundVideoEventHandler = this.handleVideoEvent.bind(this);
   }
 
-  // PIP 이벤트 리스너 설정
-  setupPIPEventListeners(pipDoc) {
-    // 재생/일시정지
-    pipDoc.getElementById('playPauseBtn').addEventListener('click', () => {
-      this.togglePlayPause();
-    });
+  start() {
+    this.observeRoot();
+    this.refreshBindings();
+    this.scheduleSync();
+  }
 
-    // 이전 곡
-    pipDoc.getElementById('prevBtn').addEventListener('click', () => {
-      this.previousTrack();
-    });
+  observeRoot() {
+    if (this.rootObserver || !document.body) {
+      return;
+    }
 
-    // 다음 곡
-    pipDoc.getElementById('nextBtn').addEventListener('click', () => {
-      this.nextTrack();
-    });
-
-    // 셔플
-    pipDoc.getElementById('shuffleBtn').addEventListener('click', () => {
-      this.toggleShuffle();
-    });
-
-    // 반복
-    pipDoc.getElementById('repeatBtn').addEventListener('click', () => {
-      this.toggleRepeat();
-    });
-
-    // 닫기
-    pipDoc.getElementById('closeBtn').addEventListener('click', () => {
-      this.closePIP();
-    });
-
-    // 진행바 클릭
-    pipDoc.getElementById('progressContainer').addEventListener('click', (e) => {
-      this.seekTo(e);
-    });
-
-    // 볼륨 슬라이더
-    pipDoc.getElementById('volumeSlider').addEventListener('input', (e) => {
-      this.setVolume(e.target.value / 100);
-    });
-
-    // 볼륨 버튼 (음소거 토글)
-    pipDoc.getElementById('volumeBtn').addEventListener('click', () => {
-      this.toggleMute();
+    this.rootObserver = new MutationObserver(this.boundRootMutationHandler);
+    this.rootObserver.observe(document.body, {
+      childList: true,
+      subtree: true,
     });
   }
 
-  // 재생/일시정지 토글
-  togglePlayPause() {
-    const playButton = document.querySelector('ytmusic-player-bar #play-pause-button');
-    if (playButton) {
-      playButton.click();
+  refreshBindings() {
+    const nextPlayerBar = this.pageAdapter.getPlayerBar();
+    if (nextPlayerBar !== this.playerBar) {
+      this.playerBar = nextPlayerBar;
+      this.observeTrackInfo();
+      this.callbacks.onEnsureUi?.();
+    }
+
+    const nextVideo = this.pageAdapter.getVideo();
+    if (nextVideo !== this.video) {
+      this.unbindVideo();
+      this.video = nextVideo;
+      this.bindVideo();
     }
   }
 
-  // 이전 곡
-  previousTrack() {
-    const prevButton = document.querySelector('ytmusic-player-bar .previous-button');
-    if (prevButton) {
-      prevButton.click();
+  observeTrackInfo() {
+    if (this.trackObserver) {
+      this.trackObserver.disconnect();
+      this.trackObserver = null;
     }
+
+    if (!this.playerBar) {
+      return;
+    }
+
+    this.trackObserver = new MutationObserver(this.boundTrackMutationHandler);
+    this.trackObserver.observe(this.playerBar, {
+      attributeFilter: ["active", "aria-pressed", "class", "src"],
+      attributes: true,
+      childList: true,
+      characterData: true,
+      subtree: true,
+    });
   }
 
-  // 다음 곡
-  nextTrack() {
-    const nextButton = document.querySelector('ytmusic-player-bar .next-button');
-    if (nextButton) {
-      nextButton.click();
+  bindVideo() {
+    if (!this.video) {
+      return;
     }
+
+    [
+      "durationchange",
+      "emptied",
+      "ended",
+      "enterpictureinpicture",
+      "leavepictureinpicture",
+      "loadedmetadata",
+      "pause",
+      "play",
+      "timeupdate",
+      "volumechange",
+    ].forEach((eventName) => {
+      this.video.addEventListener(eventName, this.boundVideoEventHandler);
+    });
   }
 
-  // 셔플 토글
-  toggleShuffle() {
-    const shuffleButton = document.querySelector('ytmusic-player-bar [aria-label*="shuffle"], ytmusic-player-bar .shuffle');
-    if (shuffleButton) {
-      shuffleButton.click();
+  unbindVideo() {
+    if (!this.video) {
+      return;
     }
+
+    [
+      "durationchange",
+      "emptied",
+      "ended",
+      "enterpictureinpicture",
+      "leavepictureinpicture",
+      "loadedmetadata",
+      "pause",
+      "play",
+      "timeupdate",
+      "volumechange",
+    ].forEach((eventName) => {
+      this.video.removeEventListener(eventName, this.boundVideoEventHandler);
+    });
   }
 
-  // 반복 토글
-  toggleRepeat() {
-    const repeatButton = document.querySelector('ytmusic-player-bar [aria-label*="repeat"], ytmusic-player-bar .repeat');
-    if (repeatButton) {
-      repeatButton.click();
-    }
+  handleRootMutations() {
+    this.refreshBindings();
+    this.scheduleSync();
   }
 
-  // 진행바 위치로 이동
-  seekTo(e) {
-    const progressContainer = e.currentTarget;
-    const rect = progressContainer.getBoundingClientRect();
-    const percent = (e.clientX - rect.left) / rect.width;
-
-    const video = document.querySelector('video');
-    if (video && video.duration) {
-      video.currentTime = percent * video.duration;
-    }
+  handleTrackMutations() {
+    this.scheduleSync();
   }
 
-  // 볼륨 설정
-  setVolume(value) {
-    const video = document.querySelector('video');
-    if (video) {
-      video.volume = Math.max(0, Math.min(1, value));
-      if (value > 0) {
-        video.muted = false;
-      }
-    }
+  handleVideoEvent() {
+    this.scheduleSync();
   }
 
-  // 음소거 토글
-  toggleMute() {
-    const video = document.querySelector('video');
-    if (video) {
-      video.muted = !video.muted;
+  scheduleSync() {
+    if (this.syncQueued) {
+      return;
     }
+
+    this.syncQueued = true;
+
+    requestAnimationFrame(() => {
+      this.syncQueued = false;
+      this.callbacks.onSync?.();
+    });
   }
 
-  // 볼륨 아이콘 가져오기
-  getVolumeIcon(volume, muted) {
-    if (muted || volume === 0) {
-      // 음소거
-      return '<path d="M16.5 12c0-1.77-1.02-3.29-2.5-4.03v2.21l2.45 2.45c.03-.2.05-.41.05-.63zm2.5 0c0 .94-.2 1.82-.54 2.64l1.51 1.51C20.63 14.91 21 13.5 21 12c0-4.28-2.99-7.86-7-8.77v2.06c2.89.86 5 3.54 5 6.71zM4.27 3L3 4.27 7.73 9H3v6h4l5 5v-6.73l4.25 4.25c-.67.52-1.42.93-2.25 1.18v2.06c1.38-.31 2.63-.95 3.69-1.81L19.73 21 21 19.73l-9-9L4.27 3zM12 4L9.91 6.09 12 8.18V4z"/>';
-    } else if (volume < 0.5) {
-      // 볼륨 낮음
-      return '<path d="M7 9v6h4l5 5V4l-5 5H7z"/><path d="M16.5 12c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02z"/>';
-    } else {
-      // 볼륨 높음
-      return '<path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/>';
-    }
-  }
-
-  // 업데이트 루프 시작
-  startUpdateLoop() {
-    this.updatePIPContent();
-    this.updateInterval = setInterval(() => {
-      this.updatePIPContent();
-    }, 500);
-  }
-
-  // 업데이트 루프 중지
-  stopUpdateLoop() {
-    if (this.updateInterval) {
-      clearInterval(this.updateInterval);
-      this.updateInterval = null;
-    }
-  }
-
-  // PIP 컨텐츠 업데이트
-  updatePIPContent() {
-    if (!this.pipWindow || !this.isInPIP) return;
-
-    const pipDoc = this.pipWindow.document;
-
-    // 앨범 아트
-    const albumArt = document.querySelector('ytmusic-player-bar img.image');
-    const pipAlbumArt = pipDoc.getElementById('albumArt');
-    const bgLayer = pipDoc.getElementById('bgLayer');
-    if (albumArt && pipAlbumArt) {
-      const imgSrc = albumArt.src.replace('w60-h60', 'w226-h226');
-      if (pipAlbumArt.src !== imgSrc) {
-        pipAlbumArt.src = imgSrc;
-        // 배경도 함께 업데이트
-        if (bgLayer) {
-          bgLayer.style.backgroundImage = `url(${imgSrc})`;
-        }
-      }
+  setSafetySyncEnabled(enabled) {
+    if (enabled && !this.safetyInterval) {
+      this.safetyInterval = window.setInterval(() => {
+        this.callbacks.onSync?.();
+      }, 4000);
+      return;
     }
 
-    // 곡 제목
-    const title = document.querySelector('ytmusic-player-bar .title');
-    const pipTitle = pipDoc.getElementById('trackTitle');
-    if (title && pipTitle) {
-      pipTitle.textContent = title.textContent || '재생 중인 곡 없음';
-      pipTitle.title = title.textContent || '';
-    }
-
-    // 아티스트
-    const artist = document.querySelector('ytmusic-player-bar .byline');
-    const pipArtist = pipDoc.getElementById('trackArtist');
-    if (artist && pipArtist) {
-      pipArtist.textContent = artist.textContent || '아티스트';
-      pipArtist.title = artist.textContent || '';
-    }
-
-    // 재생 상태
-    const video = document.querySelector('video');
-    const playIcon = pipDoc.getElementById('playIcon');
-    if (video && playIcon) {
-      if (video.paused) {
-        playIcon.innerHTML = '<path d="M8 5v14l11-7z"/>';
-      } else {
-        playIcon.innerHTML = '<path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/>';
-      }
-    }
-
-    // 진행바
-    const progressBar = pipDoc.getElementById('progressBar');
-    const currentTimeEl = pipDoc.getElementById('currentTime');
-    const totalTimeEl = pipDoc.getElementById('totalTime');
-    if (video && progressBar) {
-      const percent = (video.currentTime / video.duration) * 100 || 0;
-      progressBar.style.width = `${percent}%`;
-
-      if (currentTimeEl) {
-        currentTimeEl.textContent = this.formatTime(video.currentTime);
-      }
-      if (totalTimeEl) {
-        totalTimeEl.textContent = this.formatTime(video.duration);
-      }
-    }
-
-    // 셔플 상태
-    const shuffleBtn = pipDoc.getElementById('shuffleBtn');
-    const shuffleButton = document.querySelector('ytmusic-player-bar [aria-label*="shuffle"]');
-    if (shuffleBtn && shuffleButton) {
-      const isShuffleOn = shuffleButton.getAttribute('aria-pressed') === 'true';
-      shuffleBtn.classList.toggle('active', isShuffleOn);
-    }
-
-    // 반복 상태
-    const repeatBtn = pipDoc.getElementById('repeatBtn');
-    const repeatButton = document.querySelector('ytmusic-player-bar [aria-label*="repeat"]');
-    if (repeatBtn && repeatButton) {
-      const repeatMode = repeatButton.getAttribute('aria-label') || '';
-      const isRepeatOn = !repeatMode.toLowerCase().includes('off');
-      repeatBtn.classList.toggle('active', isRepeatOn);
-    }
-
-    // 볼륨 상태
-    const volumeSlider = pipDoc.getElementById('volumeSlider');
-    const volumeIcon = pipDoc.getElementById('volumeIcon');
-    if (video && volumeSlider && volumeIcon) {
-      const currentVolume = video.muted ? 0 : video.volume;
-      volumeSlider.value = currentVolume * 100;
-      volumeIcon.innerHTML = this.getVolumeIcon(video.volume, video.muted);
-    }
-  }
-
-  // 시간 포맷
-  formatTime(seconds) {
-    if (isNaN(seconds)) return '0:00';
-    const mins = Math.floor(seconds / 60);
-    const secs = Math.floor(seconds % 60);
-    return `${mins}:${secs.toString().padStart(2, '0')}`;
-  }
-
-  // PIP 닫기
-  closePIP() {
-    if (this.pipWindow) {
-      this.pipWindow.close();
-      this.pipWindow = null;
-    }
-    this.isInPIP = false;
-    this.stopUpdateLoop();
-  }
-
-  // 폴백: 비디오 PIP 사용
-  async fallbackVideoPIP() {
-    const video = document.querySelector('video');
-    if (video) {
-      try {
-        if (document.pictureInPictureElement) {
-          await document.exitPictureInPicture();
-        } else {
-          await video.requestPictureInPicture();
-        }
-      } catch (error) {
-        console.error('비디오 PIP 실패:', error);
-        alert('PIP 모드를 활성화할 수 없습니다. 먼저 영상을 재생해주세요.');
-      }
+    if (!enabled && this.safetyInterval) {
+      window.clearInterval(this.safetyInterval);
+      this.safetyInterval = null;
     }
   }
 }
 
-// 확장 프로그램 초기화
-const ytMusicPIP = new YouTubeMusicPIP();
+class YouTubeMusicPIPApp {
+  constructor() {
+    this.pageAdapter = new PlayerPageAdapter();
+    this.pipView = new PipView();
+    this.state = createStatusSnapshot();
+    this.stateSync = new StateSync(this.pageAdapter, {
+      onEnsureUi: () => this.ensurePageButton(),
+      onSync: () => this.syncState({ preserveError: true }),
+    });
+  }
 
+  start() {
+    this.setupMessageListener();
+    this.stateSync.start();
+    this.ensurePageButton();
+    this.syncState({ preserveError: true });
+  }
+
+  setupMessageListener() {
+    chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+      if (!message?.action) {
+        return false;
+      }
+
+      if (message.action === "getStatus") {
+        sendResponse(this.getStatus());
+        return false;
+      }
+
+      if (message.action === "togglePIP") {
+        this.togglePip({ source: message.source || "message" })
+          .then((status) => {
+            sendResponse(status);
+          })
+          .catch((error) => {
+            sendResponse(
+              this.setError(
+                serializeError(error, "pip-open-failed"),
+                { preserveSync: false },
+              ),
+            );
+          });
+        return true;
+      }
+
+      return false;
+    });
+  }
+
+  ensurePageButton() {
+    this.pageAdapter.ensurePipButton(() => {
+      void this.togglePip({ source: "page-button" });
+    });
+    this.pageAdapter.updatePipButtonState(this.state.pipMode);
+  }
+
+  canUseDocumentPip() {
+    return "documentPictureInPicture" in window;
+  }
+
+  canUseVideoPip() {
+    return Boolean(document.pictureInPictureEnabled);
+  }
+
+  createSnapshot() {
+    return Object.assign(
+      {
+        canUseDocumentPip: this.canUseDocumentPip(),
+        canUseVideoPip: this.canUseVideoPip(),
+        pipMode: this.state.pipMode,
+      },
+      this.pageAdapter.getTrackSnapshot(),
+      this.pageAdapter.getPlaybackSnapshot(),
+    );
+  }
+
+  getActualPipMode() {
+    if (this.pipView.isOpen()) {
+      return "document";
+    }
+
+    if (document.pictureInPictureElement) {
+      return "video";
+    }
+
+    return "off";
+  }
+
+  syncState(options) {
+    const settings = Object.assign({ preserveError: true }, options || {});
+    this.state.pipMode = this.getActualPipMode();
+
+    const snapshot = this.createSnapshot();
+    this.state.isReady = snapshot.isReady;
+    this.state.canUseDocumentPip = snapshot.canUseDocumentPip;
+    this.state.canUseVideoPip = snapshot.canUseVideoPip;
+
+    if (
+      this.state.lastError?.code === "player-not-ready" &&
+      snapshot.isReady
+    ) {
+      this.state.lastError = null;
+    }
+
+    if (!settings.preserveError && this.state.pipMode !== "off") {
+      this.state.lastError = null;
+    }
+
+    this.pageAdapter.updatePipButtonState(this.state.pipMode);
+    this.pipView.render(snapshot);
+    this.stateSync.setSafetySyncEnabled(this.state.pipMode !== "off");
+  }
+
+  getStatus() {
+    this.syncState({ preserveError: true });
+    return createStatusSnapshot(this.state);
+  }
+
+  setError(errorLike, options) {
+    this.state.lastError = errorLike;
+
+    const settings = Object.assign({ preserveSync: true }, options || {});
+    if (settings.preserveSync) {
+      this.syncState({ preserveError: true });
+    }
+
+    return this.getStatus();
+  }
+
+  clearError() {
+    this.state.lastError = null;
+  }
+
+  normalizeOpenError(error, fallbackCode) {
+    if (!error) {
+      return { code: fallbackCode || "pip-open-failed" };
+    }
+
+    if (error.name === "NotAllowedError") {
+      return { code: "user-gesture-required", message: error.message || "" };
+    }
+
+    if (error.name === "NotSupportedError") {
+      return { code: "pip-not-supported", message: error.message || "" };
+    }
+
+    return serializeError(error, fallbackCode || "pip-open-failed");
+  }
+
+  handleDocumentPipClosed() {
+    this.syncState({ preserveError: true });
+  }
+
+  handlePipAction(action, payload) {
+    switch (action) {
+      case "togglePlayPause":
+        this.pageAdapter.togglePlayPause();
+        break;
+      case "previousTrack":
+        this.pageAdapter.previousTrack();
+        break;
+      case "nextTrack":
+        this.pageAdapter.nextTrack();
+        break;
+      case "toggleShuffle":
+        this.pageAdapter.toggleShuffle();
+        break;
+      case "toggleRepeat":
+        this.pageAdapter.toggleRepeat();
+        break;
+      case "seek":
+        this.pageAdapter.seekTo(payload);
+        break;
+      case "setVolume":
+        this.pageAdapter.setVolume(payload);
+        break;
+      case "toggleMute":
+        this.pageAdapter.toggleMute();
+        break;
+      case "close":
+        void this.closeActivePip();
+        break;
+      default:
+        break;
+    }
+  }
+
+  async openDocumentPip() {
+    await this.pipView.open(
+      (action, payload) => this.handlePipAction(action, payload),
+      () => this.handleDocumentPipClosed(),
+    );
+  }
+
+  async openVideoPip() {
+    const video = this.pageAdapter.getVideo();
+    if (!video) {
+      throw { code: "player-not-ready" };
+    }
+
+    if (document.pictureInPictureElement && document.pictureInPictureElement !== video) {
+      await document.exitPictureInPicture();
+    }
+
+    if (!document.pictureInPictureElement) {
+      await video.requestPictureInPicture();
+    }
+  }
+
+  async openPip() {
+    this.clearError();
+
+    const snapshot = this.createSnapshot();
+    if (!snapshot.isReady) {
+      return this.setError({ code: "player-not-ready" });
+    }
+
+    if (this.canUseDocumentPip()) {
+      try {
+        await this.openDocumentPip();
+        this.syncState({ preserveError: false });
+        return this.getStatus();
+      } catch (error) {
+        const normalizedError = this.normalizeOpenError(error, "pip-open-failed");
+        if (!this.canUseVideoPip()) {
+          return this.setError(normalizedError);
+        }
+      }
+    }
+
+    if (!this.canUseVideoPip()) {
+      return this.setError({ code: "video-pip-not-supported" });
+    }
+
+    try {
+      await this.openVideoPip();
+      this.syncState({ preserveError: false });
+      return this.getStatus();
+    } catch (error) {
+      return this.setError(this.normalizeOpenError(error, "pip-open-failed"));
+    }
+  }
+
+  async closeActivePip() {
+    try {
+      if (this.pipView.isOpen()) {
+        this.pipView.close();
+      } else if (document.pictureInPictureElement) {
+        await document.exitPictureInPicture();
+      }
+    } catch (error) {
+      return this.setError(this.normalizeOpenError(error, "pip-open-failed"));
+    }
+
+    this.clearError();
+    this.syncState({ preserveError: false });
+    return this.getStatus();
+  }
+
+  async togglePip() {
+    if (this.getActualPipMode() === "off") {
+      return this.openPip();
+    }
+
+    return this.closeActivePip();
+  }
+}
+
+const app = new YouTubeMusicPIPApp();
+app.start();

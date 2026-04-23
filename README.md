@@ -1,83 +1,73 @@
-# 🎵 YouTube Music PIP Player
-**Author: Myungbin**  
-**This code was generated using Vibe Coding**  
-유튜브 뮤직을 Picture-in-Picture(PIP) 모드로 즐길 수 있는 크롬 확장 프로그램입니다.
+# YouTube Music PIP Player
+
+유튜브 뮤직을 Document Picture-in-Picture 중심으로 제어할 수 있는 Chrome 확장 프로그램입니다. 브라우저가 Document PiP를 지원하지 않거나 사용자 제스처 조건을 만족하지 못할 때는 video PiP 폴백으로 동작합니다.
 
 ![Preview](./preview.png)
 
-## ✨ 주요 기능
+## 주요 기능
 
-- **PIP 미니 플레이어**: 다른 작업을 하면서도 음악을 컨트롤할 수 있습니다
-- **재생 컨트롤**: 재생/일시정지, 이전 곡, 다음 곡
-- **셔플 & 반복**: 셔플 및 반복 모드 전환
-- **진행바**: 클릭하여 원하는 위치로 이동
-- **실시간 업데이트**: 앨범 아트, 곡 제목, 아티스트 정보 표시
-- **아름다운 UI**: 모던한 그라디언트 디자인
+- YouTube Music 플레이어 바에 PIP 토글 버튼 추가
+- 팝업과 페이지 버튼에서 동일한 PIP 상태 표시
+- 재생/일시정지, 이전/다음 곡, 셔플, 반복, 시크, 볼륨 제어
+- Document PiP 우선, 지원되지 않을 때 video PiP 폴백
+- 페이지 재렌더링과 SPA 내비게이션 이후에도 버튼 재삽입
 
-## 🚀 설치 방법
+## 설치 방법
 
-### 1. 아이콘 생성
+1. Chrome에서 `chrome://extensions/`로 이동합니다.
+2. 오른쪽 위의 `개발자 모드`를 켭니다.
+3. `압축해제된 확장 프로그램을 로드합니다`를 선택합니다.
+4. 현재 저장소 루트 폴더 `YouTubeMusic_PIP_Player`를 선택합니다.
 
-1. `generate-icons.html` 파일을 브라우저에서 엽니다
-2. **"모든 아이콘 다운로드"** 버튼을 클릭합니다
-3. 다운로드된 `icon16.png`, `icon48.png`, `icon128.png` 파일을 `icons` 폴더에 넣습니다
+## 사용 방법
 
-### 2. 크롬에 확장 프로그램 로드
+1. `https://music.youtube.com/` 탭을 엽니다.
+2. 방법 1: 확장 팝업에서 `PIP 모드 시작` 버튼을 누릅니다.
+3. 방법 2: YouTube Music 플레이어 바 오른쪽에 추가된 PIP 버튼을 누릅니다.
+4. 키보드 단축키 `Ctrl+Shift+Y` 또는 macOS의 `Command+Shift+Y`로 현재 Music 탭을 토글할 수 있습니다.
 
-1. Chrome 브라우저에서 `chrome://extensions/` 페이지로 이동합니다
-2. 오른쪽 상단의 **"개발자 모드"**를 활성화합니다
-3. **"압축해제된 확장 프로그램을 로드합니다"** 버튼을 클릭합니다
-4. 이 폴더(`Youtube_music_player`)를 선택합니다
+## 동작 범위
 
-## 📖 사용 방법
+- Chrome 116 이상: Document Picture-in-Picture를 우선 시도합니다.
+- Document PiP를 사용할 수 없거나 브라우저가 제스처를 막는 경우: 기본 video PiP로 폴백합니다.
+- 사용자가 확장을 설치한 뒤 기존 YouTube Music 탭이 이미 열려 있었다면, 탭을 한 번 새로고침해야 콘텐츠 스크립트가 연결됩니다.
 
-### 방법 1: 확장 프로그램 아이콘 클릭
-1. [YouTube Music](https://music.youtube.com)에 접속합니다
-2. 크롬 도구 모음에서 확장 프로그램 아이콘을 클릭합니다
-3. **"PIP 모드 시작"** 버튼을 클릭합니다
+## 개발 툴링
 
-### 방법 2: 플레이어 바 버튼
-1. YouTube Music 페이지의 하단 플레이어 바에서
-2. 오른쪽에 추가된 PIP 버튼(🖼)을 클릭합니다
+이 저장소는 Node LTS 환경을 가정하고 아래의 경량 품질 게이트를 포함합니다.
 
-## 🎮 PIP 창 컨트롤
-
-| 버튼 | 기능 |
-|------|------|
-| ◀◀ | 이전 곡 |
-| ▶ / ⏸ | 재생 / 일시정지 |
-| ▶▶ | 다음 곡 |
-| 🔀 | 셔플 모드 |
-| 🔁 | 반복 모드 |
-
-- **진행바 클릭**: 원하는 위치로 이동
-- **X 버튼**: PIP 창 닫기 (마우스 올리면 표시)
-
-## ⚠️ 참고 사항
-
-- Document Picture-in-Picture API는 Chrome 116 이상에서 지원됩니다
-- 구 버전 브라우저에서는 기본 비디오 PIP 모드로 폴백됩니다
-- YouTube Music 페이지에서만 동작합니다
-
-## 📁 파일 구조
-
-```
-Youtube_music_player/
-├── manifest.json          # 확장 프로그램 설정
-├── content.js             # 유튜브 뮤직 페이지 스크립트
-├── background.js          # 백그라운드 서비스 워커
-├── popup.html             # 팝업 UI
-├── popup.js               # 팝업 로직
-├── styles.css             # 컨텐츠 스타일
-├── generate-icons.html    # 아이콘 생성 유틸리티
-├── icons/
-│   ├── icon.svg           # SVG 아이콘
-│   ├── icon16.png         # 16x16 아이콘
-│   ├── icon48.png         # 48x48 아이콘
-│   └── icon128.png        # 128x128 아이콘
-└── README.md              # 이 파일
+```bash
+npm install
+npm run lint
+npm run format:check
+npm test
 ```
 
-## 📜 라이선스
+## 수동 QA 체크리스트
 
-MIT License
+- Music 탭이 아닐 때 팝업이 `YouTube Music 열기` 상태를 보여주는지 확인
+- Music 탭에서 팝업 토글과 페이지 버튼 토글이 같은 상태를 보여주는지 확인
+- Document PiP와 video PiP 폴백이 각각 정상적으로 열리고 닫히는지 확인
+- 재생/일시정지, 이전/다음 곡, 셔플, 반복, 시크, 볼륨/음소거가 PIP 창에서 동작하는지 확인
+- 탭 새로고침과 YouTube Music SPA 내비게이션 후에도 PIP 버튼이 다시 나타나는지 확인
+- 한국어/영어 UI 환경에서 셔플과 반복 버튼이 계속 동작하는지 확인
+
+## 파일 구조
+
+```text
+YouTubeMusic_PIP_Player/
+├── manifest.json
+├── background.js
+├── helpers.js
+├── content.js
+├── styles.css
+├── popup.html
+├── popup.css
+├── popup.js
+├── generate-icons.html
+├── tests/
+│   └── helpers.test.js
+└── icons/
+```
+
+`generate-icons.html`은 아이콘 생성용 보조 도구이며 런타임에는 사용되지 않습니다.

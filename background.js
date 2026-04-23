@@ -1,35 +1,57 @@
-// YouTube Music PIP Player - Background Service Worker
+const MUSIC_HOME_URL = "https://music.youtube.com/";
+const MUSIC_MATCH_PATTERN = "https://music.youtube.com/*";
+const TOGGLE_PIP_ACTION = "togglePIP";
 
-// 확장 프로그램 설치 시 실행
+function isMusicTab(tab) {
+  return Boolean(tab?.url && tab.url.startsWith(MUSIC_HOME_URL));
+}
+
+async function sendToggleMessage(tabId, source) {
+  try {
+    await chrome.tabs.sendMessage(tabId, {
+      action: TOGGLE_PIP_ACTION,
+      source,
+    });
+  } catch (error) {
+    console.error("PIP 토글 메시지 전송 실패:", error);
+  }
+}
+
+async function getTargetMusicTab() {
+  const [activeTab] = await chrome.tabs.query({
+    active: true,
+    currentWindow: true,
+  });
+
+  if (isMusicTab(activeTab)) {
+    return activeTab;
+  }
+
+  const [existingMusicTab] = await chrome.tabs.query({
+    url: [MUSIC_MATCH_PATTERN],
+  });
+
+  if (existingMusicTab?.id) {
+    await chrome.windows.update(existingMusicTab.windowId, { focused: true });
+    return chrome.tabs.update(existingMusicTab.id, { active: true });
+  }
+
+  return chrome.tabs.create({ url: MUSIC_HOME_URL });
+}
+
 chrome.runtime.onInstalled.addListener(() => {
-  console.log('YouTube Music PIP Player가 설치되었습니다.');
+  console.log("YouTube Music PIP Player가 설치되었습니다.");
 });
 
-// 아이콘 클릭 시 실행 (팝업이 없을 때 사용)
-chrome.action.onClicked.addListener(async (tab) => {
-  if (tab.url && tab.url.includes('music.youtube.com')) {
-    try {
-      await chrome.tabs.sendMessage(tab.id, { action: 'togglePIP' });
-    } catch (error) {
-      console.error('메시지 전송 실패:', error);
-    }
-  } else {
-    // YouTube Music이 아닌 경우 새 탭에서 열기
-    chrome.tabs.create({ url: 'https://music.youtube.com' });
+chrome.commands.onCommand.addListener(async (command) => {
+  if (command !== "toggle-pip") {
+    return;
   }
-});
 
-// 키보드 단축키 처리 (추후 추가 가능)
-chrome.commands?.onCommand?.addListener(async (command) => {
-  if (command === 'toggle-pip') {
-    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-    if (tab && tab.url && tab.url.includes('music.youtube.com')) {
-      try {
-        await chrome.tabs.sendMessage(tab.id, { action: 'togglePIP' });
-      } catch (error) {
-        console.error('PIP 토글 실패:', error);
-      }
-    }
+  const tab = await getTargetMusicTab();
+  if (!tab?.id || !isMusicTab(tab) || tab.status !== "complete") {
+    return;
   }
-});
 
+  await sendToggleMessage(tab.id, "command");
+});
