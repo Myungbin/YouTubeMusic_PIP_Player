@@ -612,7 +612,7 @@ class PipView {
       }
 
       .album-art {
-        width: clamp(64px, 24vw, 92px);
+        width: clamp(64px, min(22vw, 22vh), 92px);
         aspect-ratio: 1 / 1;
         flex-shrink: 0;
         border-radius: 14px;
@@ -688,6 +688,11 @@ class PipView {
         overflow: hidden;
         border-radius: 999px;
         background: rgba(255, 255, 255, 0.14);
+        transition: height 0.12s ease;
+      }
+
+      .progress-bar-container:hover .progress-track {
+        height: 7px;
       }
 
       .progress-bar {
@@ -696,6 +701,10 @@ class PipView {
         border-radius: inherit;
         background: rgba(255, 255, 255, 0.92);
         transition: width 0.15s linear;
+      }
+
+      .progress-bar-container:hover .progress-bar {
+        background: #fff;
       }
 
       .time-row {
@@ -901,20 +910,16 @@ class PipView {
 
       body[data-layout="compact"] .content {
         padding: 12px;
-        gap: 8px 10px;
-        grid-template-columns: 1fr auto;
-        grid-template-rows: auto auto;
+        gap: 8px;
       }
 
       body[data-layout="compact"] .album-section {
-        grid-column: 1 / -1;
-        min-height: 68px;
-        gap: 12px;
+        gap: 10px;
         overflow: hidden;
       }
 
       body[data-layout="compact"] .album-art {
-        width: 68px;
+        width: clamp(56px, 16vw, 72px);
       }
 
       body[data-layout="compact"] .track-title {
@@ -925,49 +930,9 @@ class PipView {
         font-size: 12px;
       }
 
-      body[data-layout="compact"] .progress-section {
-        grid-column: 2;
-        grid-row: 2;
-        display: flex;
-        align-items: center;
-        margin: 0;
-        min-height: 0;
-      }
-
-      body[data-layout="compact"] .progress-bar-container,
-      body[data-layout="compact"] .time-text {
-        max-width: 0;
-        opacity: 0;
-        pointer-events: none;
-      }
-
-      body[data-layout="compact"] .progress-bar-container {
-        height: 0;
-      }
-
-      body[data-layout="compact"] .time-row {
-        align-items: center;
-        min-height: 0;
-        margin: 0;
-      }
-
-      body[data-layout="compact"] .volume-control {
-        grid-template-columns: 26px 80px;
-        padding: 0;
-        width: auto;
-        min-height: 34px;
-      }
-
-      body[data-layout="compact"] .volume-slider-wrap {
-        width: 80px;
-      }
-
       body[data-layout="compact"] .controls {
-        grid-column: 1;
-        grid-row: 2;
-        justify-content: flex-start;
+        justify-content: center;
         gap: 6px;
-        min-height: 46px;
       }
 
       body[data-layout="compact"] .control-btn {
@@ -986,10 +951,11 @@ class PipView {
       }
 
       body[data-layout="micro"] .content {
-        padding: 10px 12px;
-        gap: 8px 10px;
-        grid-template-columns: 1fr auto;
-        grid-template-rows: auto auto;
+        padding: 8px 12px;
+        display: flex;
+        flex-direction: row;
+        align-items: center;
+        gap: 6px;
       }
 
       body[data-layout="micro"] .close-btn {
@@ -1000,19 +966,20 @@ class PipView {
       }
 
       body[data-layout="micro"] .album-section {
-        grid-column: 1 / -1;
-        min-height: 48px;
-        gap: 10px;
+        flex: 1;
+        min-width: 0;
+        min-height: 0;
+        gap: 8px;
         overflow: hidden;
       }
 
       body[data-layout="micro"] .album-art {
-        width: 48px;
-        border-radius: 10px;
+        width: 36px;
+        border-radius: 8px;
       }
 
       body[data-layout="micro"] .track-info {
-        gap: 3px;
+        gap: 0;
       }
 
       body[data-layout="micro"] .track-title {
@@ -1020,14 +987,14 @@ class PipView {
       }
 
       body[data-layout="micro"] .track-artist {
-        font-size: 10px;
+        display: none;
       }
 
       body[data-layout="micro"] .progress-section {
-        grid-column: 2;
-        grid-row: 2;
+        flex: 0 0 auto;
         display: flex;
         align-items: center;
+        order: 3;
         margin: 0;
         min-height: 0;
       }
@@ -1069,11 +1036,11 @@ class PipView {
       }
 
       body[data-layout="micro"] .controls {
-        grid-column: 1;
-        grid-row: 2;
+        flex: 0 0 auto;
+        order: 2;
         justify-content: flex-start;
-        gap: 4px;
-        min-height: 40px;
+        gap: 2px;
+        min-height: 0;
       }
 
       body[data-layout="micro"] .control-btn.small {
