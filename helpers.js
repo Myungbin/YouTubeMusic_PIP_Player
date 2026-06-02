@@ -60,11 +60,11 @@
   function getModeLabel(pipMode) {
     switch (pipMode) {
       case "document":
-        return "Document PiP 활성";
+        return "Document PiP 실행 중";
       case "video":
-        return "Video PiP 폴백 활성";
+        return "Video PiP 실행 중";
       default:
-        return "PIP 비활성";
+        return "PIP 꺼짐";
     }
   }
 
@@ -80,7 +80,7 @@
   }
 
   function getToggleButtonText(pipMode) {
-    return pipMode === "off" ? "PIP 모드 시작" : "PIP 모드 종료";
+    return pipMode === "off" ? "PIP 시작" : "PIP 종료";
   }
 
   function getErrorMessage(lastError) {

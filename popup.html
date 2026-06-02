@@ -15,16 +15,16 @@
           </svg>
         </div>
         <div class="header-copy">
+          <p class="eyebrow">YouTube Music</p>
           <h1>YouTube Music PIP</h1>
-          <p>현재 탭 상태와 PIP 모드를 한눈에 확인합니다.</p>
         </div>
       </header>
 
       <div id="errorBanner" class="banner hidden" role="alert"></div>
 
-      <section id="statusCard" class="status-card">
-        <div class="status-row">
-          <span class="status-label">현재 상태</span>
+      <section id="statusCard" class="status-panel" aria-live="polite">
+        <div class="status-head">
+          <span class="status-label">상태</span>
           <div class="status-indicator">
             <span id="statusDot" class="status-dot inactive"></span>
             <span id="statusText">탭 확인 중</span>
@@ -33,29 +33,37 @@
         <p id="statusSubtext" class="status-subtext">
           활성 탭과 PIP 상태를 확인하고 있습니다.
         </p>
+        <div id="capabilityRow" class="capability-row hidden" aria-label="PIP 지원 상태">
+          <span id="documentSupport" class="capability">Document PiP</span>
+          <span id="videoSupport" class="capability">Video PiP</span>
+        </div>
       </section>
 
-      <button id="pipButton" class="pip-button" type="button">
-        <span class="button-icon" aria-hidden="true">
-          <svg id="pipButtonIcon" viewBox="0 0 24 24">
-            <path d="M19 7h-8v6h8V7zm2-4H3c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h18c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm0 16H3V5h18v14z" />
-          </svg>
-        </span>
-        <span id="pipButtonText">PIP 모드 시작</span>
-      </button>
+      <div class="actions">
+        <button id="pipButton" class="pip-button" type="button">
+          <span class="button-icon" aria-hidden="true">
+            <svg id="pipButtonIcon" viewBox="0 0 24 24">
+              <path d="M19 7h-8v6h8V7zm2-4H3c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h18c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm0 16H3V5h18v14z" />
+            </svg>
+          </span>
+          <span id="pipButtonText">PIP 시작</span>
+        </button>
 
-      <button id="openButton" class="secondary-button hidden" type="button">
-        YouTube Music 열기
-      </button>
+        <button id="openButton" class="secondary-button hidden" type="button">
+          <span class="button-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24">
+              <path d="M14 3h7v7h-2V6.41l-9.29 9.3-1.42-1.42 9.3-9.29H14V3z"></path>
+              <path d="M5 5h6v2H5v12h12v-6h2v6c0 1.1-.9 2-2 2H5c-1.1 0-2-.9-2-2V7c0-1.1.9-2 2-2z"></path>
+            </svg>
+          </span>
+          <span>YouTube Music 열기</span>
+        </button>
+      </div>
 
-      <section class="info-card">
-        <h2 class="info-title">안내</h2>
-        <ul class="info-list">
-          <li>페이지 버튼과 팝업은 같은 PIP 상태를 공유합니다.</li>
-          <li>Chrome 116 이상에서는 Document PiP를 먼저 시도합니다.</li>
-          <li>브라우저가 막는 경우 video PiP 폴백 또는 페이지 버튼을 사용해 주세요.</li>
-        </ul>
-      </section>
+      <div id="quickStatus" class="quick-status" aria-hidden="true">
+        <span class="quick-dot"></span>
+        <span id="footerNote">재생 중인 YouTube Music 탭에서 사용할 수 있어요.</span>
+      </div>
     </div>
 
     <script src="helpers.js"></script>

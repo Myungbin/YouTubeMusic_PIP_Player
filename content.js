@@ -247,6 +247,7 @@ class PipView {
     this.pipWindow = null;
     this.onAction = null;
     this.onClose = null;
+    this.boundResizeHandler = null;
   }
 
   isOpen() {
@@ -255,8 +256,9 @@ class PipView {
 
   async open(onAction, onClose) {
     const pipWindow = await window.documentPictureInPicture.requestWindow({
-      width: 420,
-      height: 260,
+      disallowReturnToOpener: true,
+      width: 480,
+      height: 320,
       preferInitialWindowPlacement: true,
     });
 
@@ -272,6 +274,7 @@ class PipView {
     const pipDocument = pipWindow.document;
     pipDocument.head.innerHTML = "";
     pipDocument.body.innerHTML = "";
+    pipDocument.title = "YouTube Music PIP";
 
     const styleElement = pipDocument.createElement("style");
     styleElement.textContent = this.getStyles();
@@ -279,10 +282,18 @@ class PipView {
     pipDocument.body.innerHTML = this.getMarkup();
 
     this.bindEvents(pipDocument);
+    this.boundResizeHandler = () => this.updateLayout();
+    pipWindow.addEventListener("resize", this.boundResizeHandler);
+    this.updateLayout();
 
     pipWindow.addEventListener(
       "pagehide",
       () => {
+        if (this.boundResizeHandler) {
+          pipWindow.removeEventListener("resize", this.boundResizeHandler);
+          this.boundResizeHandler = null;
+        }
+
         this.pipWindow = null;
 
         if (this.onClose) {
@@ -335,6 +346,24 @@ class PipView {
     });
   }
 
+  updateLayout() {
+    if (!this.isOpen()) {
+      return;
+    }
+
+    const width = this.pipWindow.innerWidth;
+    const height = this.pipWindow.innerHeight;
+    let layout = "full";
+
+    if (width <= 360 || height <= 220) {
+      layout = "micro";
+    } else if (width <= 460 || height <= 300) {
+      layout = "compact";
+    }
+
+    this.pipWindow.document.body.dataset.layout = layout;
+  }
+
   render(snapshot) {
     if (!this.isOpen()) {
       return;
@@ -351,13 +380,16 @@ class PipView {
     const shuffleButton = pipDocument.getElementById("shuffleBtn");
     const title = pipDocument.getElementById("trackTitle");
     const totalTime = pipDocument.getElementById("totalTime");
+    const volumeControl = pipDocument.getElementById("volumeControl");
     const volumeIcon = pipDocument.getElementById("volumeIcon");
     const volumeSlider = pipDocument.getElementById("volumeSlider");
 
     if (snapshot.albumArtUrl) {
+      albumArt.classList.remove("empty");
       albumArt.src = snapshot.albumArtUrl;
       background.style.backgroundImage = `url(${snapshot.albumArtUrl})`;
     } else {
+      albumArt.classList.add("empty");
       albumArt.removeAttribute("src");
       background.style.backgroundImage = "none";
     }
@@ -373,6 +405,10 @@ class PipView {
     shuffleButton.classList.toggle("active", snapshot.shuffleActive);
     repeatButton.classList.toggle("active", snapshot.repeatActive);
     volumeSlider.value = String(Math.round(snapshot.volume * 100));
+    volumeControl.style.setProperty(
+      "--volume-progress",
+      `${Math.round(snapshot.volume * 100)}%`,
+    );
     volumeIcon.innerHTML = getVolumeIconMarkup(snapshot.volume, snapshot.muted);
   }
 
@@ -408,7 +444,9 @@ class PipView {
 
           <div class="progress-section">
             <div class="progress-bar-container" id="progressContainer">
-              <div class="progress-bar" id="progressBar"></div>
+              <div class="progress-track">
+                <div class="progress-bar" id="progressBar"></div>
+              </div>
             </div>
             <div class="time-row">
               <div class="time-text">
@@ -416,7 +454,10 @@ class PipView {
                 <span>/</span>
                 <span id="totalTime">0:00</span>
               </div>
-              <div class="volume-control">
+              <div class="volume-control" id="volumeControl" aria-label="볼륨 조절">
+                <button class="volume-btn" id="volumeBtn" type="button" aria-label="음소거 전환">
+                  <svg id="volumeIcon" viewBox="0 0 24 24"></svg>
+                </button>
                 <div class="volume-slider-wrap">
                   <input
                     class="volume-slider"
@@ -425,11 +466,9 @@ class PipView {
                     min="0"
                     max="100"
                     value="100"
+                    aria-label="볼륨"
                   />
                 </div>
-                <button class="volume-btn" id="volumeBtn" type="button" aria-label="음소거 전환">
-                  <svg id="volumeIcon" viewBox="0 0 24 24"></svg>
-                </button>
               </div>
             </div>
           </div>
@@ -477,6 +516,9 @@ class PipView {
         font-family: "Segoe UI", "Apple SD Gothic Neo", "Malgun Gothic", system-ui, sans-serif;
         background: #020617;
         overflow: hidden;
+        --volume-progress: 100%;
+        --motion-duration: 160ms;
+        --motion-easing: ease-out;
       }
 
       button,
@@ -492,14 +534,15 @@ class PipView {
         filter: blur(34px) saturate(1.3);
         opacity: 0.58;
         transform: scale(1.08);
+        transition:
+          opacity var(--motion-duration) var(--motion-easing),
+          transform var(--motion-duration) var(--motion-easing);
       }
 
       .bg-overlay {
         position: fixed;
         inset: 0;
-        background:
-          radial-gradient(circle at top, rgba(251, 113, 133, 0.28), transparent 34%),
-          linear-gradient(180deg, rgba(2, 6, 23, 0.2), rgba(2, 6, 23, 0.88));
+        background: linear-gradient(180deg, rgba(7, 8, 12, 0.18), rgba(7, 8, 12, 0.92));
       }
 
       .pip-shell {
@@ -512,9 +555,12 @@ class PipView {
         z-index: 1;
         height: 100%;
         padding: 16px;
-        display: flex;
-        flex-direction: column;
-        gap: 14px;
+        display: grid;
+        grid-template-rows: minmax(0, 1fr) auto auto;
+        gap: 12px;
+        transition:
+          gap var(--motion-duration) var(--motion-easing),
+          padding var(--motion-duration) var(--motion-easing);
       }
 
       .close-btn {
@@ -531,6 +577,21 @@ class PipView {
         color: rgba(248, 250, 252, 0.76);
         background: rgba(15, 23, 42, 0.48);
         cursor: pointer;
+        transition:
+          background 0.15s ease,
+          color 0.15s ease,
+          height var(--motion-duration) var(--motion-easing),
+          width var(--motion-duration) var(--motion-easing);
+      }
+
+      .close-btn:hover {
+        background: rgba(15, 23, 42, 0.68);
+        color: #fff;
+      }
+
+      .close-btn:focus-visible {
+        outline: 2px solid rgba(249, 115, 22, 0.92);
+        outline-offset: 2px;
       }
 
       .close-btn svg {
@@ -541,26 +602,41 @@ class PipView {
 
       .album-section {
         min-height: 0;
-        display: flex;
+        display: grid;
+        grid-template-columns: auto minmax(0, 1fr);
         align-items: center;
         gap: 14px;
-        flex: 1;
+        transition:
+          gap var(--motion-duration) var(--motion-easing),
+          min-height var(--motion-duration) var(--motion-easing);
       }
 
       .album-art {
-        width: 90px;
-        height: 90px;
+        width: clamp(64px, 24vw, 92px);
+        aspect-ratio: 1 / 1;
         flex-shrink: 0;
         border-radius: 14px;
         object-fit: cover;
-        background: linear-gradient(135deg, #334155, #0f172a);
+        background: linear-gradient(135deg, #1e293b, #0f172a);
         box-shadow: 0 18px 40px rgba(2, 6, 23, 0.4);
+        transition:
+          border-radius var(--motion-duration) var(--motion-easing),
+          box-shadow var(--motion-duration) var(--motion-easing),
+          width var(--motion-duration) var(--motion-easing);
+      }
+
+      .album-art.empty {
+        background:
+          linear-gradient(135deg, rgba(255, 23, 68, 0.42), rgba(47, 52, 61, 0.92)),
+          #2f343d;
       }
 
       .track-info {
         min-width: 0;
         display: grid;
         gap: 6px;
+        align-content: center;
+        transition: gap var(--motion-duration) var(--motion-easing);
       }
 
       .track-title,
@@ -573,72 +649,174 @@ class PipView {
       .track-title {
         font-size: 16px;
         font-weight: 700;
+        transition: font-size var(--motion-duration) var(--motion-easing);
       }
 
       .track-artist {
         font-size: 13px;
         color: rgba(248, 250, 252, 0.72);
+        transition:
+          color var(--motion-duration) var(--motion-easing),
+          font-size var(--motion-duration) var(--motion-easing);
       }
 
       .progress-section {
         display: grid;
         gap: 8px;
+        transition:
+          gap var(--motion-duration) var(--motion-easing),
+          opacity var(--motion-duration) var(--motion-easing);
       }
 
       .progress-bar-container {
+        height: 18px;
+        display: flex;
+        align-items: center;
+        cursor: pointer;
+        max-width: 100%;
+        opacity: 1;
+        overflow: hidden;
+        transition:
+          height var(--motion-duration) var(--motion-easing),
+          max-width var(--motion-duration) var(--motion-easing),
+          opacity var(--motion-duration) var(--motion-easing);
+      }
+
+      .progress-track {
+        width: 100%;
         height: 5px;
         overflow: hidden;
         border-radius: 999px;
-        background: rgba(255, 255, 255, 0.16);
-        cursor: pointer;
+        background: rgba(255, 255, 255, 0.14);
       }
 
       .progress-bar {
         height: 100%;
         width: 0;
         border-radius: inherit;
-        background: linear-gradient(90deg, #fb7185 0%, #f97316 100%);
+        background: rgba(255, 255, 255, 0.92);
+        transition: width 0.15s linear;
       }
 
       .time-row {
         display: flex;
         align-items: center;
         justify-content: space-between;
-        gap: 8px;
+        gap: 10px;
+        min-width: 0;
+        transition:
+          gap var(--motion-duration) var(--motion-easing),
+          min-height var(--motion-duration) var(--motion-easing);
       }
 
       .time-text {
         display: inline-flex;
         gap: 4px;
+        max-width: 86px;
+        overflow: hidden;
         font-size: 11px;
         color: rgba(248, 250, 252, 0.68);
         font-variant-numeric: tabular-nums;
+        opacity: 1;
+        transition:
+          max-width var(--motion-duration) var(--motion-easing),
+          opacity var(--motion-duration) var(--motion-easing);
       }
 
       .volume-control {
-        display: inline-flex;
+        display: inline-grid;
+        grid-template-columns: 26px 88px;
         align-items: center;
-        gap: 8px;
+        column-gap: 8px;
+        min-width: 0;
+        min-height: 36px;
+        padding: 0;
+        transition:
+          column-gap var(--motion-duration) var(--motion-easing),
+          min-height var(--motion-duration) var(--motion-easing);
       }
 
       .volume-slider-wrap {
-        width: 70px;
+        height: 26px;
+        width: 88px;
+        display: grid;
+        align-items: center;
+        transition:
+          height var(--motion-duration) var(--motion-easing),
+          width 0.18s ease,
+          opacity 0.18s ease,
+          margin 0.18s ease;
       }
 
       .volume-slider {
         width: 100%;
+        height: 4px;
+        margin: 0;
+        display: block;
+        border-radius: 999px;
+        outline: none;
+        appearance: none;
+        background:
+          linear-gradient(
+            90deg,
+            rgba(255, 255, 255, 0.92) 0%,
+            rgba(255, 255, 255, 0.92) var(--volume-progress),
+            rgba(255, 255, 255, 0.18) var(--volume-progress),
+            rgba(255, 255, 255, 0.18) 100%
+          );
+      }
+
+      .volume-slider::-webkit-slider-runnable-track {
+        height: 4px;
+        border-radius: 999px;
+        background: transparent;
+      }
+
+      .volume-slider::-webkit-slider-thumb {
+        appearance: none;
+        width: 12px;
+        height: 12px;
+        margin-top: -4px;
+        border: 0;
+        border-radius: 999px;
+        background: #fff;
+        box-shadow: 0 2px 10px rgba(2, 6, 23, 0.32);
+      }
+
+      .volume-slider::-moz-range-track {
+        height: 4px;
+        border: 0;
+        border-radius: 999px;
+        background: transparent;
+      }
+
+      .volume-slider::-moz-range-thumb {
+        width: 12px;
+        height: 12px;
+        border: 0;
+        border-radius: 999px;
+        background: #fff;
+        box-shadow: 0 2px 10px rgba(2, 6, 23, 0.32);
       }
 
       .volume-btn {
-        width: 28px;
-        height: 28px;
+        width: 26px;
+        height: 26px;
         display: grid;
         place-items: center;
         border: 0;
         border-radius: 999px;
         color: rgba(248, 250, 252, 0.82);
-        background: rgba(15, 23, 42, 0.38);
+        background: transparent;
         cursor: pointer;
+        transition:
+          color 0.15s ease,
+          height var(--motion-duration) var(--motion-easing),
+          width var(--motion-duration) var(--motion-easing);
+      }
+
+      .volume-btn:hover {
+        color: #fff;
       }
 
       .volume-btn svg {
@@ -652,6 +830,10 @@ class PipView {
         align-items: center;
         justify-content: center;
         gap: 8px;
+        min-width: 0;
+        transition:
+          gap var(--motion-duration) var(--motion-easing),
+          min-height var(--motion-duration) var(--motion-easing);
       }
 
       .control-btn {
@@ -659,11 +841,21 @@ class PipView {
         height: 44px;
         display: grid;
         place-items: center;
-        border: 1px solid rgba(255, 255, 255, 0.12);
+        border: 0;
         border-radius: 999px;
-        color: #fff;
-        background: rgba(15, 23, 42, 0.36);
+        color: rgba(248, 250, 252, 0.88);
+        background: transparent;
         cursor: pointer;
+        box-shadow: none;
+        opacity: 1;
+        overflow: hidden;
+        transition:
+          color 0.15s ease,
+          height var(--motion-duration) var(--motion-easing),
+          margin var(--motion-duration) var(--motion-easing),
+          opacity var(--motion-duration) var(--motion-easing),
+          transform 0.1s ease,
+          width var(--motion-duration) var(--motion-easing);
       }
 
       .control-btn svg {
@@ -675,48 +867,232 @@ class PipView {
       .control-btn.play-pause {
         width: 54px;
         height: 54px;
-        background: rgba(248, 250, 252, 0.18);
+        background: transparent;
+        color: #fff;
       }
 
       .control-btn.small {
         width: 36px;
         height: 36px;
+        border-color: transparent;
+        background: transparent;
+        box-shadow: none;
+        color: rgba(248, 250, 252, 0.68);
       }
 
       .control-btn.small.active {
-        color: #fbbf24;
-        border-color: rgba(251, 191, 36, 0.42);
-        background: rgba(251, 191, 36, 0.16);
+        color: #fff;
+        border-color: transparent;
+        background: transparent;
       }
 
-      @media (max-height: 210px) {
-        .content {
-          padding: 10px 12px;
-          gap: 10px;
-        }
+      .control-btn:hover {
+        color: #fff;
+      }
 
-        .album-art {
-          width: 64px;
-          height: 64px;
-        }
+      .control-btn:active {
+        transform: scale(0.93);
+      }
 
-        .track-title {
-          font-size: 13px;
-        }
+      .control-btn:focus-visible {
+        outline: 2px solid rgba(249, 115, 22, 0.92);
+        outline-offset: 2px;
+      }
 
-        .track-artist {
-          font-size: 11px;
-        }
+      body[data-layout="compact"] .content {
+        padding: 12px;
+        gap: 8px 10px;
+        grid-template-columns: 1fr auto;
+        grid-template-rows: auto auto;
+      }
 
-        .control-btn {
-          width: 36px;
-          height: 36px;
-        }
+      body[data-layout="compact"] .album-section {
+        grid-column: 1 / -1;
+        min-height: 68px;
+        gap: 12px;
+        overflow: hidden;
+      }
 
-        .control-btn.play-pause {
-          width: 42px;
-          height: 42px;
-        }
+      body[data-layout="compact"] .album-art {
+        width: 68px;
+      }
+
+      body[data-layout="compact"] .track-title {
+        font-size: 14px;
+      }
+
+      body[data-layout="compact"] .track-artist {
+        font-size: 12px;
+      }
+
+      body[data-layout="compact"] .progress-section {
+        grid-column: 2;
+        grid-row: 2;
+        display: flex;
+        align-items: center;
+        margin: 0;
+        min-height: 0;
+      }
+
+      body[data-layout="compact"] .progress-bar-container,
+      body[data-layout="compact"] .time-text {
+        max-width: 0;
+        opacity: 0;
+        pointer-events: none;
+      }
+
+      body[data-layout="compact"] .progress-bar-container {
+        height: 0;
+      }
+
+      body[data-layout="compact"] .time-row {
+        align-items: center;
+        min-height: 0;
+        margin: 0;
+      }
+
+      body[data-layout="compact"] .volume-control {
+        grid-template-columns: 26px 80px;
+        padding: 0;
+        width: auto;
+        min-height: 34px;
+      }
+
+      body[data-layout="compact"] .volume-slider-wrap {
+        width: 80px;
+      }
+
+      body[data-layout="compact"] .controls {
+        grid-column: 1;
+        grid-row: 2;
+        justify-content: flex-start;
+        gap: 6px;
+        min-height: 46px;
+      }
+
+      body[data-layout="compact"] .control-btn {
+        width: 38px;
+        height: 38px;
+      }
+
+      body[data-layout="compact"] .control-btn.play-pause {
+        width: 46px;
+        height: 46px;
+      }
+
+      body[data-layout="compact"] .control-btn.small {
+        width: 34px;
+        height: 34px;
+      }
+
+      body[data-layout="micro"] .content {
+        padding: 10px 12px;
+        gap: 8px 10px;
+        grid-template-columns: 1fr auto;
+        grid-template-rows: auto auto;
+      }
+
+      body[data-layout="micro"] .close-btn {
+        top: 6px;
+        right: 6px;
+        width: 24px;
+        height: 24px;
+      }
+
+      body[data-layout="micro"] .album-section {
+        grid-column: 1 / -1;
+        min-height: 48px;
+        gap: 10px;
+        overflow: hidden;
+      }
+
+      body[data-layout="micro"] .album-art {
+        width: 48px;
+        border-radius: 10px;
+      }
+
+      body[data-layout="micro"] .track-info {
+        gap: 3px;
+      }
+
+      body[data-layout="micro"] .track-title {
+        font-size: 12px;
+      }
+
+      body[data-layout="micro"] .track-artist {
+        font-size: 10px;
+      }
+
+      body[data-layout="micro"] .progress-section {
+        grid-column: 2;
+        grid-row: 2;
+        display: flex;
+        align-items: center;
+        margin: 0;
+        min-height: 0;
+      }
+
+      body[data-layout="micro"] .progress-bar-container,
+      body[data-layout="micro"] .time-text {
+        max-width: 0;
+        opacity: 0;
+        pointer-events: none;
+      }
+
+      body[data-layout="micro"] .progress-bar-container {
+        height: 0;
+      }
+
+      body[data-layout="micro"] .time-row {
+        align-items: center;
+        min-height: 0;
+        margin: 0;
+      }
+
+      body[data-layout="micro"] .volume-control {
+        grid-template-columns: 30px;
+        min-height: 30px;
+        padding: 0;
+        gap: 0;
+      }
+
+      body[data-layout="micro"] .volume-slider-wrap {
+        width: 0;
+        height: 0;
+        opacity: 0;
+        pointer-events: none;
+      }
+
+      body[data-layout="micro"] .volume-btn {
+        width: 30px;
+        height: 30px;
+      }
+
+      body[data-layout="micro"] .controls {
+        grid-column: 1;
+        grid-row: 2;
+        justify-content: flex-start;
+        gap: 4px;
+        min-height: 40px;
+      }
+
+      body[data-layout="micro"] .control-btn.small {
+        width: 0;
+        height: 0;
+        border-width: 0;
+        margin: 0 -2px;
+        opacity: 0;
+        pointer-events: none;
+      }
+
+      body[data-layout="micro"] .control-btn {
+        width: 34px;
+        height: 34px;
+      }
+
+      body[data-layout="micro"] .control-btn.play-pause {
+        width: 40px;
+        height: 40px;
       }
     `;
   }
