@@ -68,6 +68,16 @@ const SELECTORS = {
   video: "video",
 };
 
+const PIP_DEFAULT_WIDTH = 480;
+const PIP_DEFAULT_HEIGHT = 320;
+// At or below either size the window switches to the single-row micro layout.
+const MICRO_MAX_WIDTH = 360;
+const MICRO_MAX_HEIGHT = 220;
+// Extra room needed to leave micro, so resizing right at the boundary
+// doesn't flip the layout back and forth.
+const MICRO_EXIT_MARGIN = 16;
+const LAYOUT_FADE_MS = 160;
+
 const SEEK_STEP_SECONDS = 5;
 const VOLUME_STEP = 0.05;
 // One mouse wheel notch; smaller trackpad deltas are accumulated up to this.
@@ -88,12 +98,12 @@ const PIP_SHORTCUTS = {
 
 class PlayerPageAdapter {
   constructor() {
-    this.playerVolumeState = null;
+    this.playerState = null;
     this.onPlayerStateChange = null;
 
     window.addEventListener(PLAYER_STATE_EVENT, (event) => {
       try {
-        this.playerVolumeState = JSON.parse(event.detail);
+        this.playerState = JSON.parse(event.detail);
       } catch {
         return;
       }
@@ -171,15 +181,17 @@ class PlayerPageAdapter {
 
   getPlaybackSnapshot() {
     const video = this.getVideo();
-    const duration = Number.isFinite(video?.duration) ? video.duration : 0;
-    const currentTime = Number.isFinite(video?.currentTime) ? video.currentTime : 0;
-    const percent = duration > 0 ? clamp(currentTime / duration, 0, 1) : 0;
-    // video.volume includes loudness normalization, so prefer the player's own
-    // volume, which matches YouTube Music's volume slider.
-    const volumeState = this.playerVolumeState || {
+    // Prefer the player's own state: video.volume includes loudness
+    // normalization, and video.currentTime keeps counting across tracks that
+    // play back to back.
+    const playerState = this.playerState || {
+      currentTime: Number.isFinite(video?.currentTime) ? video.currentTime : 0,
+      duration: Number.isFinite(video?.duration) ? video.duration : 0,
       muted: Boolean(video?.muted),
       volume: Number.isFinite(video?.volume) ? video.volume : 1,
     };
+    const { currentTime, duration } = playerState;
+    const percent = duration > 0 ? clamp(currentTime / duration, 0, 1) : 0;
 
     return {
       canSeek: duration > 0,
@@ -187,11 +199,11 @@ class PlayerPageAdapter {
       duration,
       isPlaying: Boolean(video && !video.paused),
       isReady: Boolean(this.getPlayerBar() && video),
-      muted: volumeState.muted,
+      muted: playerState.muted,
       percent,
       repeatActive: this.readToggleState(this.queryPlayer(SELECTORS.repeat)),
       shuffleActive: this.readToggleState(this.queryPlayer(SELECTORS.shuffle)),
-      volume: volumeState.volume,
+      volume: playerState.volume,
     };
   }
 
@@ -320,22 +332,20 @@ class PlayerPageAdapter {
   }
 
   seekTo(percent) {
-    const video = this.getVideo();
-    if (!video || !Number.isFinite(video.duration) || video.duration <= 0) {
+    if (!this.getVideo()) {
       return false;
     }
 
-    video.currentTime = clamp(percent, 0, 1) * video.duration;
+    this.sendPlayerCommand("seekToPercent", clamp(percent, 0, 1));
     return true;
   }
 
   seekBy(seconds) {
-    const video = this.getVideo();
-    if (!video || !Number.isFinite(video.duration) || video.duration <= 0) {
+    if (!this.getVideo()) {
       return false;
     }
 
-    video.currentTime = clamp(video.currentTime + seconds, 0, video.duration);
+    this.sendPlayerCommand("seekBy", seconds);
     return true;
   }
 
@@ -389,8 +399,8 @@ class PipView {
   async open(onAction, onClose) {
     const pipWindow = await window.documentPictureInPicture.requestWindow({
       disallowReturnToOpener: true,
-      width: 480,
-      height: 320,
+      width: PIP_DEFAULT_WIDTH,
+      height: PIP_DEFAULT_HEIGHT,
       preferInitialWindowPlacement: true,
     });
 
@@ -667,17 +677,46 @@ class PipView {
       return;
     }
 
+    const body = this.pipWindow.document.body;
     const width = this.pipWindow.innerWidth;
     const height = this.pipWindow.innerHeight;
-    let layout = "full";
+    const margin = body.dataset.layout === "micro" ? MICRO_EXIT_MARGIN : 0;
+    const layout =
+      width <= MICRO_MAX_WIDTH + margin || height <= MICRO_MAX_HEIGHT + margin
+        ? "micro"
+        : "full";
 
-    if (width <= 360 || height <= 220) {
-      layout = "micro";
-    } else if (width <= 460 || height <= 300) {
-      layout = "compact";
+    // Sizes scale with the window instead of jumping between breakpoints.
+    const scale = clamp(
+      Math.min(
+        (width - MICRO_MAX_WIDTH) / (PIP_DEFAULT_WIDTH - MICRO_MAX_WIDTH),
+        (height - MICRO_MAX_HEIGHT) / (PIP_DEFAULT_HEIGHT - MICRO_MAX_HEIGHT),
+      ),
+      0,
+      1,
+    );
+    body.style.setProperty("--pip-scale", scale.toFixed(3));
+
+    if (body.dataset.layout === layout) {
+      return;
     }
 
-    this.pipWindow.document.body.dataset.layout = layout;
+    const isFirstLayout = !body.dataset.layout;
+    body.dataset.layout = layout;
+
+    // Switching to or from the single-row layout rearranges everything, which
+    // can't be interpolated, so fade the new arrangement in instead.
+    const reduceMotion = this.pipWindow.matchMedia(
+      "(prefers-reduced-motion: reduce)",
+    ).matches;
+    if (!isFirstLayout && !reduceMotion) {
+      body
+        .querySelector(".content")
+        .animate([{ opacity: 0 }, { opacity: 1 }], {
+          duration: LAYOUT_FADE_MS,
+          easing: "ease-out",
+        });
+    }
   }
 
   render(snapshot) {
@@ -873,8 +912,9 @@ class PipView {
         background: #020617;
         overflow: hidden;
         --volume-progress: 100%;
-        --motion-duration: 160ms;
-        --motion-easing: ease-out;
+        /* 0 at the smallest two-row size, 1 at the default size and above.
+           Set from updateLayout() so sizes follow the window continuously. */
+        --pip-scale: 1;
       }
 
       button,
@@ -890,9 +930,6 @@ class PipView {
         filter: blur(34px) saturate(1.3);
         opacity: 0.58;
         transform: scale(1.08);
-        transition:
-          opacity var(--motion-duration) var(--motion-easing),
-          transform var(--motion-duration) var(--motion-easing);
       }
 
       .bg-overlay {
@@ -910,13 +947,10 @@ class PipView {
         position: relative;
         z-index: 1;
         height: 100%;
-        padding: 16px;
+        padding: calc(12px + 4px * var(--pip-scale));
         display: grid;
         grid-template-rows: minmax(0, 1fr) auto auto;
-        gap: 12px;
-        transition:
-          gap var(--motion-duration) var(--motion-easing),
-          padding var(--motion-duration) var(--motion-easing);
+        gap: calc(8px + 4px * var(--pip-scale));
       }
 
       .top-actions {
@@ -940,9 +974,7 @@ class PipView {
         cursor: pointer;
         transition:
           background 0.15s ease,
-          color 0.15s ease,
-          height var(--motion-duration) var(--motion-easing),
-          width var(--motion-duration) var(--motion-easing);
+          color 0.15s ease;
       }
 
       .top-btn:hover,
@@ -1102,24 +1134,17 @@ class PipView {
         display: grid;
         grid-template-columns: auto minmax(0, 1fr);
         align-items: center;
-        gap: 14px;
-        transition:
-          gap var(--motion-duration) var(--motion-easing),
-          min-height var(--motion-duration) var(--motion-easing);
+        gap: calc(10px + 4px * var(--pip-scale));
       }
 
       .album-art {
-        width: clamp(64px, min(22vw, 22vh), 92px);
+        width: clamp(56px, min(22vw, 22vh), 92px);
         aspect-ratio: 1 / 1;
         flex-shrink: 0;
         border-radius: 14px;
         object-fit: cover;
         background: linear-gradient(135deg, #1e293b, #0f172a);
         box-shadow: 0 18px 40px rgba(2, 6, 23, 0.4);
-        transition:
-          border-radius var(--motion-duration) var(--motion-easing),
-          box-shadow var(--motion-duration) var(--motion-easing),
-          width var(--motion-duration) var(--motion-easing);
       }
 
       .album-art.empty {
@@ -1133,7 +1158,6 @@ class PipView {
         display: grid;
         gap: 6px;
         align-content: center;
-        transition: gap var(--motion-duration) var(--motion-easing);
       }
 
       .track-title,
@@ -1144,25 +1168,18 @@ class PipView {
       }
 
       .track-title {
-        font-size: 16px;
+        font-size: calc(14px + 2px * var(--pip-scale));
         font-weight: 700;
-        transition: font-size var(--motion-duration) var(--motion-easing);
       }
 
       .track-artist {
-        font-size: 13px;
+        font-size: calc(12px + 1px * var(--pip-scale));
         color: rgba(248, 250, 252, 0.72);
-        transition:
-          color var(--motion-duration) var(--motion-easing),
-          font-size var(--motion-duration) var(--motion-easing);
       }
 
       .progress-section {
         display: grid;
         gap: 8px;
-        transition:
-          gap var(--motion-duration) var(--motion-easing),
-          opacity var(--motion-duration) var(--motion-easing);
       }
 
       .progress-bar-container {
@@ -1173,10 +1190,6 @@ class PipView {
         max-width: 100%;
         opacity: 1;
         overflow: hidden;
-        transition:
-          height var(--motion-duration) var(--motion-easing),
-          max-width var(--motion-duration) var(--motion-easing),
-          opacity var(--motion-duration) var(--motion-easing);
       }
 
       .progress-track {
@@ -1210,9 +1223,6 @@ class PipView {
         justify-content: space-between;
         gap: 10px;
         min-width: 0;
-        transition:
-          gap var(--motion-duration) var(--motion-easing),
-          min-height var(--motion-duration) var(--motion-easing);
       }
 
       .time-text {
@@ -1224,9 +1234,6 @@ class PipView {
         color: rgba(248, 250, 252, 0.68);
         font-variant-numeric: tabular-nums;
         opacity: 1;
-        transition:
-          max-width var(--motion-duration) var(--motion-easing),
-          opacity var(--motion-duration) var(--motion-easing);
       }
 
       .volume-control {
@@ -1237,9 +1244,6 @@ class PipView {
         min-width: 0;
         min-height: 36px;
         padding: 0;
-        transition:
-          column-gap var(--motion-duration) var(--motion-easing),
-          min-height var(--motion-duration) var(--motion-easing);
       }
 
       .volume-slider-wrap {
@@ -1247,11 +1251,6 @@ class PipView {
         width: 88px;
         display: grid;
         align-items: center;
-        transition:
-          height var(--motion-duration) var(--motion-easing),
-          width 0.18s ease,
-          opacity 0.18s ease,
-          margin 0.18s ease;
       }
 
       .volume-slider {
@@ -1316,9 +1315,7 @@ class PipView {
         background: transparent;
         cursor: pointer;
         transition:
-          color 0.15s ease,
-          height var(--motion-duration) var(--motion-easing),
-          width var(--motion-duration) var(--motion-easing);
+          color 0.15s ease;
       }
 
       .volume-btn:hover {
@@ -1335,16 +1332,13 @@ class PipView {
         display: flex;
         align-items: center;
         justify-content: center;
-        gap: 8px;
+        gap: calc(6px + 2px * var(--pip-scale));
         min-width: 0;
-        transition:
-          gap var(--motion-duration) var(--motion-easing),
-          min-height var(--motion-duration) var(--motion-easing);
       }
 
       .control-btn {
-        width: 44px;
-        height: 44px;
+        width: calc(38px + 6px * var(--pip-scale));
+        height: calc(38px + 6px * var(--pip-scale));
         display: grid;
         place-items: center;
         border: 0;
@@ -1357,11 +1351,7 @@ class PipView {
         overflow: hidden;
         transition:
           color 0.15s ease,
-          height var(--motion-duration) var(--motion-easing),
-          margin var(--motion-duration) var(--motion-easing),
-          opacity var(--motion-duration) var(--motion-easing),
-          transform 0.1s ease,
-          width var(--motion-duration) var(--motion-easing);
+          transform 0.1s ease;
       }
 
       .control-btn svg {
@@ -1371,15 +1361,15 @@ class PipView {
       }
 
       .control-btn.play-pause {
-        width: 54px;
-        height: 54px;
+        width: calc(46px + 8px * var(--pip-scale));
+        height: calc(46px + 8px * var(--pip-scale));
         background: transparent;
         color: #fff;
       }
 
       .control-btn.small {
-        width: 36px;
-        height: 36px;
+        width: calc(34px + 2px * var(--pip-scale));
+        height: calc(34px + 2px * var(--pip-scale));
         border-color: transparent;
         background: transparent;
         box-shadow: none;
@@ -1403,48 +1393,6 @@ class PipView {
       .control-btn:focus-visible {
         outline: 2px solid rgba(249, 115, 22, 0.92);
         outline-offset: 2px;
-      }
-
-      body[data-layout="compact"] .content {
-        padding: 12px;
-        gap: 8px;
-      }
-
-      body[data-layout="compact"] .album-section {
-        gap: 10px;
-        overflow: hidden;
-      }
-
-      body[data-layout="compact"] .album-art {
-        width: clamp(56px, 16vw, 72px);
-      }
-
-      body[data-layout="compact"] .track-title {
-        font-size: 14px;
-      }
-
-      body[data-layout="compact"] .track-artist {
-        font-size: 12px;
-      }
-
-      body[data-layout="compact"] .controls {
-        justify-content: center;
-        gap: 6px;
-      }
-
-      body[data-layout="compact"] .control-btn {
-        width: 38px;
-        height: 38px;
-      }
-
-      body[data-layout="compact"] .control-btn.play-pause {
-        width: 46px;
-        height: 46px;
-      }
-
-      body[data-layout="compact"] .control-btn.small {
-        width: 34px;
-        height: 34px;
       }
 
       body[data-layout="micro"] .content {

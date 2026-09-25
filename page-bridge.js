@@ -35,11 +35,39 @@
     window.dispatchEvent(
       new CustomEvent(STATE_EVENT, {
         detail: JSON.stringify({
+          currentTime: Number(player.getCurrentTime()) || 0,
+          duration: Number(player.getDuration()) || 0,
           muted: Boolean(player.isMuted()),
           volume: Number(player.getVolume()) / 100,
         }),
       }),
     );
+  }
+
+  // Tracks that play back to back share one media timeline, so video.currentTime
+  // keeps counting from the previous track. The player API reports the time
+  // within the current track.
+  function seekToSeconds(player, seconds) {
+    const duration = Number(player.getDuration());
+    if (!Number.isFinite(seconds) || !(duration > 0)) {
+      return;
+    }
+
+    player.seekTo(Math.min(Math.max(seconds, 0), duration), true);
+  }
+
+  function seekToPercent(percent) {
+    const player = getPlayer();
+    if (player && Number.isFinite(percent)) {
+      seekToSeconds(player, percent * Number(player.getDuration()));
+    }
+  }
+
+  function seekBy(seconds) {
+    const player = getPlayer();
+    if (player && Number.isFinite(seconds)) {
+      seekToSeconds(player, Number(player.getCurrentTime()) + seconds);
+    }
   }
 
   function applyVolume(player, value, shouldUnmute) {
@@ -129,6 +157,12 @@
       case "toggleMute":
         toggleMute();
         break;
+      case "seekToPercent":
+        seekToPercent(command.value);
+        break;
+      case "seekBy":
+        seekBy(command.value);
+        break;
       default:
         break;
     }
@@ -136,6 +170,12 @@
     emitState();
   });
 
-  // volumechange doesn't bubble, so listen in the capture phase.
-  document.addEventListener("volumechange", emitState, true);
+  // Media events don't bubble, so listen in the capture phase. That also runs
+  // before the content script's own listeners on the video element, so its
+  // sync already sees the fresh state.
+  ["durationchange", "emptied", "loadedmetadata", "seeked", "timeupdate", "volumechange"].forEach(
+    (eventName) => {
+      document.addEventListener(eventName, emitState, true);
+    },
+  );
 })();
