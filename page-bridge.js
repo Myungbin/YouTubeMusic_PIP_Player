@@ -9,6 +9,9 @@
     "ytmusic-player-bar #expand-volume-slider",
   ];
 
+  const QUEUE_ITEM_SELECTOR = "ytmusic-player-queue ytmusic-player-queue-item";
+  const QUEUE_THUMBNAIL_WIDTH = 72;
+
   function getPlayer() {
     const player = document.getElementById("movie_player");
     return player && typeof player.setVolume === "function" ? player : null;
@@ -39,19 +42,34 @@
     );
   }
 
+  function applyVolume(player, value, shouldUnmute) {
+    const volume = Math.round(Math.min(Math.max(value, 0), 1) * 100);
+    player.setVolume(volume);
+    syncVolumeSliders(volume);
+
+    if (shouldUnmute && volume > 0 && player.isMuted()) {
+      player.unMute();
+    }
+  }
+
   function setVolume(value) {
     const player = getPlayer();
     if (!player || !Number.isFinite(value)) {
       return;
     }
 
-    const volume = Math.round(Math.min(Math.max(value, 0), 1) * 100);
-    player.setVolume(volume);
-    syncVolumeSliders(volume);
+    applyVolume(player, value, true);
+  }
 
-    if (volume > 0 && player.isMuted()) {
-      player.unMute();
+  // Relative changes read the player's current volume here so rapid key
+  // repeats and wheel steps never work from a stale value.
+  function changeVolume(delta) {
+    const player = getPlayer();
+    if (!player || !Number.isFinite(delta)) {
+      return;
     }
+
+    applyVolume(player, Number(player.getVolume()) / 100 + delta, delta > 0);
   }
 
   function toggleMute() {
@@ -67,6 +85,25 @@
     }
   }
 
+  // Queue thumbnails lazy-load only while the queue is on screen, so their
+  // URLs are copied from the item's Polymer data into an attribute that the
+  // content script can read from its isolated world.
+  function annotateQueueThumbnails() {
+    document.querySelectorAll(QUEUE_ITEM_SELECTOR).forEach((item) => {
+      const thumbnails = (item.data || item.__data?.data)?.thumbnail?.thumbnails;
+      if (!Array.isArray(thumbnails) || thumbnails.length === 0) {
+        return;
+      }
+
+      const thumbnail =
+        thumbnails.find((candidate) => candidate.width >= QUEUE_THUMBNAIL_WIDTH) ||
+        thumbnails[thumbnails.length - 1];
+      if (thumbnail?.url && item.dataset.ytmPipThumbnail !== thumbnail.url) {
+        item.dataset.ytmPipThumbnail = thumbnail.url;
+      }
+    });
+  }
+
   window.addEventListener(COMMAND_EVENT, (event) => {
     let command;
     try {
@@ -75,9 +112,19 @@
       return;
     }
 
+    // Not a volume command, and emitting state here would schedule another
+    // sync that annotates again.
+    if (command?.type === "annotateQueue") {
+      annotateQueueThumbnails();
+      return;
+    }
+
     switch (command?.type) {
       case "setVolume":
         setVolume(command.value);
+        break;
+      case "changeVolume":
+        changeVolume(command.value);
         break;
       case "toggleMute":
         toggleMute();

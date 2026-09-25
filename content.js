@@ -53,11 +53,37 @@ const SELECTORS = {
   playPause: "#play-pause-button",
   playerBar: "ytmusic-player-bar",
   previous: ".previous-button",
+  queueArtist: ".byline",
+  // Alternate song/video versions of a queue item are rendered but hidden.
+  queueCounterpart: "#counterpart-renderer",
+  queueDuration: ".duration",
+  queueItem: "ytmusic-player-queue ytmusic-player-queue-item",
+  queuePlayButton: "ytmusic-play-button-renderer",
+  queueThumbnail: "img",
+  queueTitle: ".song-title",
   repeat: ".repeat",
   rightControls: ".right-controls-buttons",
   shuffle: ".shuffle",
   title: ".title",
   video: "video",
+};
+
+const SEEK_STEP_SECONDS = 5;
+const VOLUME_STEP = 0.05;
+// One mouse wheel notch; smaller trackpad deltas are accumulated up to this.
+const WHEEL_STEP_DELTA = 100;
+const WHEEL_LINE_HEIGHT = 33;
+
+// Keyed by event.code so shortcuts keep working with a Korean keyboard layout.
+const PIP_SHORTCUTS = {
+  ArrowDown: ["changeVolume", -VOLUME_STEP],
+  ArrowLeft: ["seekBy", -SEEK_STEP_SECONDS],
+  ArrowRight: ["seekBy", SEEK_STEP_SECONDS],
+  ArrowUp: ["changeVolume", VOLUME_STEP],
+  KeyM: ["toggleMute"],
+  KeyN: ["nextTrack"],
+  KeyP: ["previousTrack"],
+  Space: ["togglePlayPause"],
 };
 
 class PlayerPageAdapter {
@@ -169,6 +195,57 @@ class PlayerPageAdapter {
     };
   }
 
+  getQueueItems() {
+    return Array.from(document.querySelectorAll(SELECTORS.queueItem)).filter(
+      (item) => !item.closest(SELECTORS.queueCounterpart),
+    );
+  }
+
+  readQueueItem(item) {
+    const readText = (selector) =>
+      item.querySelector(selector)?.textContent?.trim() || "";
+    // Thumbnails that haven't lazy-loaded yet use a data: placeholder, so
+    // prefer the URL page-bridge.js copies from the item's data.
+    const thumbnailUrl =
+      item.dataset.ytmPipThumbnail ||
+      item.querySelector(SELECTORS.queueThumbnail)?.src ||
+      "";
+
+    return {
+      artist: readText(SELECTORS.queueArtist),
+      duration: readText(SELECTORS.queueDuration),
+      thumbnailUrl: thumbnailUrl.startsWith("http") ? thumbnailUrl : "",
+      title: readText(SELECTORS.queueTitle),
+    };
+  }
+
+  getQueueSnapshot(includeItems) {
+    if (includeItems) {
+      // Handled synchronously by page-bridge.js before the items are read.
+      this.sendPlayerCommand("annotateQueue");
+    }
+
+    const items = this.getQueueItems();
+    const currentIndex = items.findIndex((item) => item.hasAttribute("selected"));
+    const nextItem = currentIndex >= 0 ? items[currentIndex + 1] : null;
+
+    return {
+      currentIndex,
+      items: includeItems ? items.map((item) => this.readQueueItem(item)) : [],
+      nextTrack: nextItem ? this.readQueueItem(nextItem) : null,
+    };
+  }
+
+  playQueueItem(index) {
+    const item = this.getQueueItems()[index];
+    if (!item) {
+      return false;
+    }
+
+    (item.querySelector(SELECTORS.queuePlayButton) || item).click();
+    return true;
+  }
+
   ensurePipButton(onClick) {
     const controls = this.getRightControls();
     if (!controls) {
@@ -252,6 +329,25 @@ class PlayerPageAdapter {
     return true;
   }
 
+  seekBy(seconds) {
+    const video = this.getVideo();
+    if (!video || !Number.isFinite(video.duration) || video.duration <= 0) {
+      return false;
+    }
+
+    video.currentTime = clamp(video.currentTime + seconds, 0, video.duration);
+    return true;
+  }
+
+  changeVolume(delta) {
+    if (!this.getVideo()) {
+      return false;
+    }
+
+    this.sendPlayerCommand("changeVolume", delta);
+    return true;
+  }
+
   setVolume(value) {
     if (!this.getVideo()) {
       return false;
@@ -277,10 +373,17 @@ class PipView {
     this.onAction = null;
     this.onClose = null;
     this.boundResizeHandler = null;
+    this.queueOpen = false;
+    this.queueSignature = "";
+    this.wheelDelta = 0;
   }
 
   isOpen() {
     return Boolean(this.pipWindow && !this.pipWindow.closed);
+  }
+
+  isQueueOpen() {
+    return this.isOpen() && this.queueOpen;
   }
 
   async open(onAction, onClose) {
@@ -299,6 +402,9 @@ class PipView {
     this.pipWindow = pipWindow;
     this.onAction = onAction;
     this.onClose = onClose;
+    this.queueOpen = false;
+    this.queueSignature = "";
+    this.wheelDelta = 0;
 
     const pipDocument = pipWindow.document;
     pipDocument.head.innerHTML = "";
@@ -373,6 +479,187 @@ class PipView {
     pipDocument.getElementById("volumeBtn").addEventListener("click", () => {
       this.onAction?.("toggleMute");
     });
+
+    pipDocument.getElementById("queueBtn").addEventListener("click", () => {
+      this.setQueueOpen(!this.queueOpen);
+    });
+
+    pipDocument.getElementById("queueCloseBtn").addEventListener("click", () => {
+      this.setQueueOpen(false);
+    });
+
+    pipDocument.getElementById("queueList").addEventListener("click", (event) => {
+      const row = event.target.closest(".queue-item");
+      if (row) {
+        this.onAction?.("playQueueItem", Number(row.dataset.index));
+      }
+    });
+
+    pipDocument.addEventListener("keydown", (event) => this.handleKeydown(event));
+    // Buttons activate on Space keyup, which would toggle playback twice.
+    pipDocument.addEventListener("keyup", (event) => {
+      if (event.code === "Space") {
+        event.preventDefault();
+      }
+    });
+    pipDocument.addEventListener("wheel", (event) => this.handleWheel(event), {
+      passive: false,
+    });
+  }
+
+  handleKeydown(event) {
+    if (event.ctrlKey || event.altKey || event.metaKey) {
+      return;
+    }
+
+    if (event.code === "KeyQ") {
+      event.preventDefault();
+      this.setQueueOpen(!this.queueOpen);
+      return;
+    }
+
+    if (event.code === "Escape" && this.queueOpen) {
+      event.preventDefault();
+      this.setQueueOpen(false);
+      return;
+    }
+
+    const shortcut = PIP_SHORTCUTS[event.code];
+    if (!shortcut) {
+      return;
+    }
+
+    // Also stops the focused volume slider from handling arrow keys itself.
+    event.preventDefault();
+    this.onAction?.(...shortcut);
+  }
+
+  handleWheel(event) {
+    // Let the queue list scroll normally.
+    if (event.target.closest(".queue-panel")) {
+      return;
+    }
+
+    event.preventDefault();
+
+    const deltaY =
+      event.deltaMode === 1 ? event.deltaY * WHEEL_LINE_HEIGHT : event.deltaY;
+    if (deltaY === 0) {
+      return;
+    }
+
+    if (Math.abs(deltaY) >= WHEEL_STEP_DELTA) {
+      this.wheelDelta = 0;
+      this.onAction?.("changeVolume", -Math.sign(deltaY) * VOLUME_STEP);
+      return;
+    }
+
+    if (Math.sign(deltaY) !== Math.sign(this.wheelDelta)) {
+      this.wheelDelta = 0;
+    }
+
+    this.wheelDelta += deltaY;
+    if (Math.abs(this.wheelDelta) >= WHEEL_STEP_DELTA) {
+      this.onAction?.("changeVolume", -Math.sign(this.wheelDelta) * VOLUME_STEP);
+      this.wheelDelta = 0;
+    }
+  }
+
+  setQueueOpen(open) {
+    if (!this.isOpen() || this.queueOpen === open) {
+      return;
+    }
+
+    this.queueOpen = open;
+    this.queueSignature = "";
+
+    const pipDocument = this.pipWindow.document;
+    pipDocument.getElementById("queuePanel").hidden = !open;
+    pipDocument.getElementById("queueBtn").classList.toggle("active", open);
+    pipDocument.getElementById("queueBtn").setAttribute("aria-expanded", String(open));
+
+    // The closed view skips reading the full queue, so ask for a fresh render.
+    this.onAction?.("refresh");
+  }
+
+  renderNextTrack(pipDocument, nextTrack) {
+    const nextTrackRow = pipDocument.getElementById("nextTrack");
+    const nextTrackText = pipDocument.getElementById("nextTrackText");
+
+    nextTrackRow.hidden = !nextTrack;
+    if (!nextTrack) {
+      return;
+    }
+
+    const label = nextTrack.artist
+      ? `${nextTrack.title} · ${nextTrack.artist}`
+      : nextTrack.title;
+    nextTrackText.textContent = label;
+    nextTrackRow.title = `다음 곡: ${label}`;
+  }
+
+  renderQueue(pipDocument, queue) {
+    const signature = JSON.stringify([queue.currentIndex, queue.items]);
+    if (signature === this.queueSignature) {
+      return;
+    }
+
+    const isFirstRender = this.queueSignature === "";
+    this.queueSignature = signature;
+
+    const list = pipDocument.getElementById("queueList");
+    const previousScrollTop = list.scrollTop;
+    pipDocument.getElementById("queueEmpty").hidden = queue.items.length > 0;
+
+    list.replaceChildren(
+      ...queue.items.map((item, index) =>
+        this.createQueueRow(pipDocument, item, index, index === queue.currentIndex),
+      ),
+    );
+
+    const currentRow = list.querySelector(".queue-item.current");
+    if (isFirstRender && currentRow) {
+      currentRow.scrollIntoView({ block: "center" });
+    } else {
+      list.scrollTop = previousScrollTop;
+    }
+  }
+
+  createQueueRow(pipDocument, item, index, isCurrent) {
+    const row = pipDocument.createElement("button");
+    row.className = isCurrent ? "queue-item current" : "queue-item";
+    row.type = "button";
+    row.dataset.index = String(index);
+    row.title = item.artist ? `${item.title} · ${item.artist}` : item.title;
+    if (isCurrent) {
+      row.setAttribute("aria-current", "true");
+    }
+
+    const thumbnail = pipDocument.createElement("img");
+    thumbnail.className = "queue-thumb";
+    thumbnail.alt = "";
+    if (item.thumbnailUrl) {
+      thumbnail.src = item.thumbnailUrl;
+    }
+
+    const info = pipDocument.createElement("span");
+    info.className = "queue-info";
+
+    const title = pipDocument.createElement("span");
+    title.className = "queue-title";
+    title.textContent = item.title;
+
+    const artist = pipDocument.createElement("span");
+    artist.className = "queue-artist";
+    artist.textContent = item.artist;
+
+    const duration = pipDocument.createElement("span");
+    duration.className = "queue-duration";
+    duration.textContent = item.duration;
+
+    info.append(title, artist);
+    row.append(thumbnail, info, duration);
+    return row;
   }
 
   updateLayout() {
@@ -439,6 +726,14 @@ class PipView {
       `${Math.round(snapshot.volume * 100)}%`,
     );
     volumeIcon.innerHTML = getVolumeIconMarkup(snapshot.volume, snapshot.muted);
+
+    if (snapshot.queue) {
+      this.renderNextTrack(pipDocument, snapshot.queue.nextTrack);
+
+      if (this.queueOpen) {
+        this.renderQueue(pipDocument, snapshot.queue);
+      }
+    }
   }
 
   close() {
@@ -456,11 +751,39 @@ class PipView {
       <div class="bg-layer" id="bgLayer"></div>
       <div class="bg-overlay"></div>
       <div class="pip-shell">
-        <button class="close-btn" id="closeBtn" type="button" aria-label="PIP 닫기">
-          <svg viewBox="0 0 24 24">
-            <path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"></path>
-          </svg>
-        </button>
+        <div class="top-actions">
+          <button
+            class="top-btn queue-btn"
+            id="queueBtn"
+            type="button"
+            aria-label="재생목록"
+            aria-controls="queuePanel"
+            aria-expanded="false"
+            title="재생목록 (Q)"
+          >
+            <svg viewBox="0 0 24 24">
+              <path d="M3 10h11v2H3v-2zm0-4h11v2H3V6zm0 8h7v2H3v-2zm13-1v8l6-4-6-4z"></path>
+            </svg>
+          </button>
+          <button class="top-btn close-btn" id="closeBtn" type="button" aria-label="PIP 닫기" title="PIP 닫기">
+            <svg viewBox="0 0 24 24">
+              <path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"></path>
+            </svg>
+          </button>
+        </div>
+
+        <section class="queue-panel" id="queuePanel" aria-label="재생목록" hidden>
+          <div class="queue-header">
+            <span class="queue-heading">재생목록</span>
+            <button class="top-btn" id="queueCloseBtn" type="button" aria-label="재생목록 닫기" title="재생목록 닫기 (Esc)">
+              <svg viewBox="0 0 24 24">
+                <path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"></path>
+              </svg>
+            </button>
+          </div>
+          <div class="queue-list" id="queueList"></div>
+          <div class="queue-empty" id="queueEmpty" hidden>재생목록이 비어 있습니다</div>
+        </section>
 
         <div class="content">
           <div class="album-section">
@@ -468,11 +791,15 @@ class PipView {
             <div class="track-info">
               <div class="track-title" id="trackTitle">재생 중인 곡 없음</div>
               <div class="track-artist" id="trackArtist">아티스트 정보 없음</div>
+              <div class="next-track" id="nextTrack" hidden>
+                <span class="next-track-label">다음 곡</span>
+                <span class="next-track-text" id="nextTrackText"></span>
+              </div>
             </div>
           </div>
 
           <div class="progress-section">
-            <div class="progress-bar-container" id="progressContainer">
+            <div class="progress-bar-container" id="progressContainer" title="클릭해서 이동 · 5초 이동 (←/→)">
               <div class="progress-track">
                 <div class="progress-bar" id="progressBar"></div>
               </div>
@@ -484,7 +811,7 @@ class PipView {
                 <span id="totalTime">0:00</span>
               </div>
               <div class="volume-control" id="volumeControl" aria-label="볼륨 조절">
-                <button class="volume-btn" id="volumeBtn" type="button" aria-label="음소거 전환">
+                <button class="volume-btn" id="volumeBtn" type="button" aria-label="음소거 전환" title="음소거 (M) · 볼륨 (↑/↓, 휠)">
                   <svg id="volumeIcon" viewBox="0 0 24 24"></svg>
                 </button>
                 <div class="volume-slider-wrap">
@@ -508,15 +835,15 @@ class PipView {
                 <path d="M10.59 9.17L5.41 4 4 5.41l5.17 5.17 1.42-1.41zM14.5 4l2.04 2.04L4 18.59 5.41 20 17.96 7.46 20 9.5V4h-5.5zm.33 9.41l-1.41 1.41 3.13 3.13L14.5 20H20v-5.5l-2.04 2.04-3.13-3.13z"></path>
               </svg>
             </button>
-            <button class="control-btn" id="prevBtn" type="button" aria-label="이전 곡">
+            <button class="control-btn" id="prevBtn" type="button" aria-label="이전 곡" title="이전 곡 (P)">
               <svg viewBox="0 0 24 24">
                 <path d="M6 6h2v12H6zm3.5 6l8.5 6V6z"></path>
               </svg>
             </button>
-            <button class="control-btn play-pause" id="playPauseBtn" type="button" aria-label="재생 또는 일시정지">
+            <button class="control-btn play-pause" id="playPauseBtn" type="button" aria-label="재생 또는 일시정지" title="재생/일시정지 (Space)">
               <svg id="playIcon" viewBox="0 0 24 24"></svg>
             </button>
-            <button class="control-btn" id="nextBtn" type="button" aria-label="다음 곡">
+            <button class="control-btn" id="nextBtn" type="button" aria-label="다음 곡" title="다음 곡 (N)">
               <svg viewBox="0 0 24 24">
                 <path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z"></path>
               </svg>
@@ -592,11 +919,16 @@ class PipView {
           padding var(--motion-duration) var(--motion-easing);
       }
 
-      .close-btn {
+      .top-actions {
         position: absolute;
         top: 10px;
         right: 10px;
         z-index: 2;
+        display: flex;
+        gap: 6px;
+      }
+
+      .top-btn {
         width: 28px;
         height: 28px;
         display: grid;
@@ -613,20 +945,156 @@ class PipView {
           width var(--motion-duration) var(--motion-easing);
       }
 
-      .close-btn:hover {
+      .top-btn:hover,
+      .top-btn.active {
         background: rgba(15, 23, 42, 0.68);
         color: #fff;
       }
 
-      .close-btn:focus-visible {
+      .top-btn:focus-visible,
+      .queue-item:focus-visible {
         outline: 2px solid rgba(249, 115, 22, 0.92);
         outline-offset: 2px;
       }
 
-      .close-btn svg {
+      .top-btn svg {
         width: 14px;
         height: 14px;
         fill: currentColor;
+      }
+
+      .queue-btn svg {
+        width: 16px;
+        height: 16px;
+      }
+
+      .queue-panel {
+        position: absolute;
+        inset: 0;
+        z-index: 3;
+        display: grid;
+        grid-template-rows: auto minmax(0, 1fr);
+        background: rgba(2, 6, 23, 0.82);
+        backdrop-filter: blur(18px);
+      }
+
+      .queue-panel[hidden] {
+        display: none;
+      }
+
+      .queue-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 10px 10px 6px 14px;
+      }
+
+      .queue-heading {
+        font-size: 13px;
+        font-weight: 700;
+      }
+
+      .queue-list {
+        min-height: 0;
+        overflow-y: auto;
+        padding: 0 6px 8px;
+        scrollbar-width: thin;
+        scrollbar-color: rgba(255, 255, 255, 0.24) transparent;
+      }
+
+      .queue-empty {
+        padding: 24px 14px;
+        font-size: 12px;
+        text-align: center;
+        color: rgba(248, 250, 252, 0.6);
+      }
+
+      .queue-item {
+        width: 100%;
+        display: grid;
+        grid-template-columns: 36px minmax(0, 1fr) auto;
+        align-items: center;
+        gap: 10px;
+        padding: 6px 8px;
+        border: 0;
+        border-radius: 8px;
+        color: inherit;
+        background: transparent;
+        text-align: left;
+        cursor: pointer;
+      }
+
+      .queue-item:hover {
+        background: rgba(255, 255, 255, 0.08);
+      }
+
+      .queue-item.current {
+        background: rgba(255, 255, 255, 0.14);
+      }
+
+      .queue-thumb {
+        width: 36px;
+        height: 36px;
+        border-radius: 6px;
+        object-fit: cover;
+        background: rgba(255, 255, 255, 0.08);
+      }
+
+      .queue-thumb:not([src]) {
+        visibility: hidden;
+      }
+
+      .queue-info {
+        min-width: 0;
+        display: grid;
+        gap: 2px;
+      }
+
+      .queue-title,
+      .queue-artist,
+      .next-track {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .queue-title {
+        font-size: 12px;
+        font-weight: 600;
+      }
+
+      .queue-item.current .queue-title {
+        color: #fff;
+      }
+
+      .queue-artist,
+      .queue-duration {
+        font-size: 11px;
+        color: rgba(248, 250, 252, 0.6);
+      }
+
+      .queue-duration {
+        font-variant-numeric: tabular-nums;
+      }
+
+      .next-track {
+        margin-top: 2px;
+        font-size: 11px;
+        color: rgba(248, 250, 252, 0.56);
+      }
+
+      .next-track[hidden] {
+        display: none;
+      }
+
+      .next-track-label {
+        margin-right: 6px;
+        padding: 1px 6px;
+        border-radius: 999px;
+        font-size: 10px;
+        font-weight: 600;
+        color: rgba(248, 250, 252, 0.78);
+        background: rgba(255, 255, 255, 0.12);
       }
 
       .album-section {
@@ -987,11 +1455,20 @@ class PipView {
         gap: 6px;
       }
 
-      body[data-layout="micro"] .close-btn {
+      body[data-layout="micro"] .top-actions {
         top: 6px;
         right: 6px;
+      }
+
+      body[data-layout="micro"] .close-btn {
         width: 24px;
         height: 24px;
+      }
+
+      /* No room for these in the single-row layout; Q still opens the queue. */
+      body[data-layout="micro"] .queue-btn,
+      body[data-layout="micro"] .next-track {
+        display: none;
       }
 
       body[data-layout="micro"] .album-section {
@@ -1225,10 +1702,18 @@ class StateSync {
 
     this.syncQueued = true;
 
-    requestAnimationFrame(() => {
+    const runSync = () => {
       this.syncQueued = false;
       this.callbacks.onSync?.();
-    });
+    };
+
+    // requestAnimationFrame doesn't fire while the Music tab is in the
+    // background, which is the usual case while the PIP window is in use.
+    if (document.hidden) {
+      setTimeout(runSync, 16);
+    } else {
+      requestAnimationFrame(runSync);
+    }
   }
 
   setSafetySyncEnabled(enabled) {
@@ -1318,6 +1803,10 @@ class YouTubeMusicPIPApp {
         canUseDocumentPip: this.canUseDocumentPip(),
         canUseVideoPip: this.canUseVideoPip(),
         pipMode: this.state.pipMode,
+        // Reading the queue DOM is only worth it while the PIP window shows it.
+        queue: this.pipView.isOpen()
+          ? this.pageAdapter.getQueueSnapshot(this.pipView.isQueueOpen())
+          : null,
       },
       this.pageAdapter.getTrackSnapshot(),
       this.pageAdapter.getPlaybackSnapshot(),
@@ -1420,6 +1909,18 @@ class YouTubeMusicPIPApp {
         break;
       case "seek":
         this.pageAdapter.seekTo(payload);
+        break;
+      case "seekBy":
+        this.pageAdapter.seekBy(payload);
+        break;
+      case "changeVolume":
+        this.pageAdapter.changeVolume(payload);
+        break;
+      case "playQueueItem":
+        this.pageAdapter.playQueueItem(payload);
+        break;
+      case "refresh":
+        this.stateSync.scheduleSync();
         break;
       case "setVolume":
         this.pageAdapter.setVolume(payload);
