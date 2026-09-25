@@ -5,6 +5,7 @@ const browserGlobals = {
   clearInterval: "readonly",
   clearTimeout: "readonly",
   console: "readonly",
+  CustomEvent: "readonly",
   document: "readonly",
   globalThis: "readonly",
   MutationObserver: "readonly",

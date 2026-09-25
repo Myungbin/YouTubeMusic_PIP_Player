@@ -33,6 +33,12 @@
       "js": ["helpers.js", "content.js"],
       "css": ["styles.css"],
       "run_at": "document_end"
+    },
+    {
+      "matches": ["https://music.youtube.com/*"],
+      "js": ["page-bridge.js"],
+      "run_at": "document_end",
+      "world": "MAIN"
     }
   ],
   "background": {

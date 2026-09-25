@@ -42,6 +42,10 @@ const ACTIVE_CONTROL_CLASS_NAMES = [
   "active",
 ];
 
+// Shared with page-bridge.js, which drives the player API in the main world.
+const PLAYER_COMMAND_EVENT = "ytm-pip:player-command";
+const PLAYER_STATE_EVENT = "ytm-pip:player-state";
+
 const SELECTORS = {
   albumArt: "img.image",
   artist: ".byline",
@@ -57,6 +61,33 @@ const SELECTORS = {
 };
 
 class PlayerPageAdapter {
+  constructor() {
+    this.playerVolumeState = null;
+    this.onPlayerStateChange = null;
+
+    window.addEventListener(PLAYER_STATE_EVENT, (event) => {
+      try {
+        this.playerVolumeState = JSON.parse(event.detail);
+      } catch {
+        return;
+      }
+
+      this.onPlayerStateChange?.();
+    });
+  }
+
+  sendPlayerCommand(type, value) {
+    window.dispatchEvent(
+      new CustomEvent(PLAYER_COMMAND_EVENT, {
+        detail: JSON.stringify({ type, value }),
+      }),
+    );
+  }
+
+  requestPlayerState() {
+    this.sendPlayerCommand("requestState");
+  }
+
   getPlayerBar() {
     return document.querySelector(SELECTORS.playerBar);
   }
@@ -117,6 +148,12 @@ class PlayerPageAdapter {
     const duration = Number.isFinite(video?.duration) ? video.duration : 0;
     const currentTime = Number.isFinite(video?.currentTime) ? video.currentTime : 0;
     const percent = duration > 0 ? clamp(currentTime / duration, 0, 1) : 0;
+    // video.volume includes loudness normalization, so prefer the player's own
+    // volume, which matches YouTube Music's volume slider.
+    const volumeState = this.playerVolumeState || {
+      muted: Boolean(video?.muted),
+      volume: Number.isFinite(video?.volume) ? video.volume : 1,
+    };
 
     return {
       canSeek: duration > 0,
@@ -124,11 +161,11 @@ class PlayerPageAdapter {
       duration,
       isPlaying: Boolean(video && !video.paused),
       isReady: Boolean(this.getPlayerBar() && video),
-      muted: Boolean(video?.muted),
+      muted: volumeState.muted,
       percent,
       repeatActive: this.readToggleState(this.queryPlayer(SELECTORS.repeat)),
       shuffleActive: this.readToggleState(this.queryPlayer(SELECTORS.shuffle)),
-      volume: Number.isFinite(video?.volume) ? video.volume : 1,
+      volume: volumeState.volume,
     };
   }
 
@@ -216,28 +253,20 @@ class PlayerPageAdapter {
   }
 
   setVolume(value) {
-    const video = this.getVideo();
-    if (!video) {
+    if (!this.getVideo()) {
       return false;
     }
 
-    const nextVolume = clamp(value, 0, 1);
-    video.volume = nextVolume;
-
-    if (nextVolume > 0) {
-      video.muted = false;
-    }
-
+    this.sendPlayerCommand("setVolume", clamp(value, 0, 1));
     return true;
   }
 
   toggleMute() {
-    const video = this.getVideo();
-    if (!video) {
+    if (!this.getVideo()) {
       return false;
     }
 
-    video.muted = !video.muted;
+    this.sendPlayerCommand("toggleMute");
     return true;
   }
 }
@@ -1226,10 +1255,12 @@ class YouTubeMusicPIPApp {
       onEnsureUi: () => this.ensurePageButton(),
       onSync: () => this.syncState({ preserveError: true }),
     });
+    this.pageAdapter.onPlayerStateChange = () => this.stateSync.scheduleSync();
   }
 
   start() {
     this.setupMessageListener();
+    this.pageAdapter.requestPlayerState();
     this.stateSync.start();
     this.ensurePageButton();
     this.syncState({ preserveError: true });
@@ -1433,6 +1464,8 @@ class YouTubeMusicPIPApp {
     if (!snapshot.isReady) {
       return this.setError({ code: "player-not-ready" });
     }
+
+    this.pageAdapter.requestPlayerState();
 
     if (this.canUseDocumentPip()) {
       try {
