@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "YouTube Music PIP Player",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "유튜브 뮤직을 Picture-in-Picture 모드로 제어할 수 있는 Chrome 확장 프로그램입니다.",
   "permissions": ["activeTab"],
   "host_permissions": ["https://music.youtube.com/*"],
